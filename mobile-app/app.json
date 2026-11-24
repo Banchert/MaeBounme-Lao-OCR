@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "MaeBounme (Lao OCR)",
+    "slug": "mae-bounmee-scan",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#244E9A"
+    },
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "assets/**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.maebounmee.laoocr",
+      "infoPlist": {
+        "NSCameraUsageDescription": "ใช้กล้องสำหรับถ่ายภาพเอกสาร A4 เพื่ออ่านข้อความภาษาลาวแบบ Offline",
+        "NSPhotoLibraryUsageDescription": "เข้าถึงคลังภาพเพื่อเลือกเอกสารสำหรับสแกนข้อความภาษาลาว"
+      }
+    },
+    "android": {
+      "package": "com.maebounmee.laoocr",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#244E9A"
+      },
+      "permissions": [
+        "CAMERA",
+        "READ_MEDIA_IMAGES"
+      ]
+    },
+    "plugins": [
+      "onnxruntime-react-native",
+      "./plugins/withPinnedOnnxRuntime"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "d1689e50-a523-4ef4-87fe-03c9498e0423"
+      }
+    }
+  }
+}

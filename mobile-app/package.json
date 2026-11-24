@@ -1,0 +1,36 @@
+{
+  "name": "mae-bounmee-scan",
+  "version": "1.0.0",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "start": "expo start --dev-client",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "build:android": "eas build --platform android --profile preview",
+    "build:ios": "eas build --platform ios --profile production"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "1.23.1",
+    "buffer": "^6.0.3",
+    "docx": "^9.0.2",
+    "expo": "~52.0.0",
+    "expo-asset": "~11.0.0",
+    "expo-clipboard": "~7.0.0",
+    "expo-document-picker": "~13.0.0",
+    "expo-file-system": "~18.0.0",
+    "expo-font": "~13.0.0",
+    "expo-image-manipulator": "~13.0.0",
+    "expo-image-picker": "~16.0.0",
+    "expo-sharing": "~13.0.0",
+    "expo-status-bar": "~2.0.0",
+    "jpeg-js": "^0.4.4",
+    "onnxruntime-react-native": "^1.20.1",
+    "react": "18.3.1",
+    "react-native": "0.76.9"
+  },
+  "devDependencies": {
+    "@types/react": "~18.3.12",
+    "typescript": "^5.6.3"
+  }
+}
