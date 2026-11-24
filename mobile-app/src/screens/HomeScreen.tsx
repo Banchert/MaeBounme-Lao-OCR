@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Alert, Image, Linking, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { TRANSLATIONS, UiLang } from "../i18n/translations";
-import { mobileOcr, OcrModelMode } from "../services/ocrEngine";
+import { mobileOcr, OcrModelMode, OutputFormatMode } from "../services/ocrEngine";
 import { DONATE_INFO } from "../services/monetization";
 
 interface Props {
@@ -17,6 +17,7 @@ export default function HomeScreen({ uiLang, setUiLang, onResult }: Props) {
   const [rotations, setRotations] = useState<number[]>([]);
   const [activeIdx, setActiveIdx] = useState(0);
   const [modelMode, setModelMode] = useState<OcrModelMode>("lao");
+  const [outputFormat, setOutputFormat] = useState<OutputFormatMode>("plain");
   const [busy, setBusy] = useState(false);
   const [donateOpen, setDonateOpen] = useState(false);
   const [activeQr, setActiveQr] = useState<"lak" | "usd" | "thb" | null>(null);
@@ -69,7 +70,7 @@ export default function HomeScreen({ uiLang, setUiLang, onResult }: Props) {
     if (!images.length || busy) return;
     setBusy(true);
     try {
-      const res = await mobileOcr.scanImages(images, rotations, modelMode);
+      const res = await mobileOcr.scanImages(images, rotations, modelMode, outputFormat);
       onResult(res.text, res.ms, res.avgConf, res.lineCount, images, rotations);
     } catch (e: any) {
       Alert.alert("OCR Error", e?.message || "Scan failed");
@@ -119,6 +120,21 @@ export default function HomeScreen({ uiLang, setUiLang, onResult }: Props) {
             onPress={() => setModelMode(val)}
           >
             <Text style={[styles.modelBtnText, modelMode === val && styles.modelBtnTextActive]}>{lbl}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <View style={styles.modelRow}>
+        {([
+          ["plain", "📄 ຂໍ້ຄວາມປົກກະຕິ (Text)"],
+          ["markdown", "🧾 Markdown (.md + ตาราง/หัวข้อ)"]
+        ] as [OutputFormatMode, string][]).map(([val, lbl]) => (
+          <TouchableOpacity
+            key={val}
+            style={[styles.modelBtn, outputFormat === val && styles.modelBtnActive]}
+            onPress={() => setOutputFormat(val)}
+          >
+            <Text style={[styles.modelBtnText, outputFormat === val && styles.modelBtnTextActive]}>{lbl}</Text>
           </TouchableOpacity>
         ))}
       </View>

@@ -16,7 +16,7 @@ import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import { TRANSLATIONS, UiLang } from "../i18n/translations";
-import { exportDocx, exportTxt } from "../services/exporter";
+import { exportDocx, exportMarkdown, exportTxt } from "../services/exporter";
 import { findSuspectLaoWords, suggestLaoWords } from "../services/ocrEngine";
 import { DONATE_INFO } from "../services/monetization";
 
@@ -448,10 +448,13 @@ export default function ResultScreen({
         </View>
         <View style={styles.row}>
           <TouchableOpacity style={[styles.btn, styles.outline, { flex: 1 }]} onPress={() => exportTxt(text)}>
-            <Text style={styles.btnTextDark}>{t.exportTxt}</Text>
+            <Text style={styles.btnTextDark}>💾 .txt</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.btn, styles.blue, { flex: 1 }]} onPress={() => exportDocx(text)}>
-            <Text style={styles.btnText}>{t.exportDocx}</Text>
+          <TouchableOpacity style={[styles.btn, styles.outline, { flex: 1 }]} onPress={() => exportMarkdown(text)}>
+            <Text style={styles.btnTextDark}>🧾 .md</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.btn, styles.blue, { flex: 1.2 }]} onPress={() => exportDocx(text)}>
+            <Text style={styles.btnText}>📘 .docx</Text>
           </TouchableOpacity>
         </View>
       </View>

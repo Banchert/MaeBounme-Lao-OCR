@@ -225,6 +225,7 @@ function correctLaoLine(line: string): string {
 }
 
 export type OcrModelMode = "lao" | "lao+en" | "thai";
+export type OutputFormatMode = "plain" | "markdown";
 
 export interface OcrResult {
   text: string;
@@ -704,8 +705,82 @@ class MobileLaoOcrEngine {
     return correctLaoLine(cleaned);
   }
 
+  /** Format detected boxes + text into structured Markdown (headings, tables, bullets, paragraphs) */
+  private formatPageMarkdown(items: { box: [number, number, number, number]; text: string }[]): string {
+    if (!items.length) return "";
+    const heights = items.map((it) => it.box[3] - it.box[1]).sort((a, b) => a - b);
+    const lh = Math.max(10, heights[Math.floor(heights.length / 2)] || 20);
+
+    // Group into visual rows
+    const sorted = [...items].sort((a, b) => (a.box[1] + a.box[3]) / 2 - (b.box[1] + b.box[3]) / 2);
+    const rows: { box: [number, number, number, number]; text: string }[][] = [];
+    for (const it of sorted) {
+      let placed = false;
+      for (const r of rows) {
+        const ref = r[r.length - 1].box;
+        const ov = Math.min(ref[3], it.box[3]) - Math.max(ref[1], it.box[1]);
+        const minH = Math.min(ref[3] - ref[1], it.box[3] - it.box[1]);
+        if (ov > 0.42 * minH) {
+          r.push(it);
+          r.sort((a, b) => a.box[0] - b.box[0]);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) rows.push([it]);
+    }
+
+    const out: string[] = [];
+    let i = 0;
+    let prevY2: number | null = null;
+    while (i < rows.length) {
+      const r = rows[i];
+      const y1 = Math.min(...r.map((x) => x.box[1]));
+      const y2 = Math.max(...r.map((x) => x.box[3]));
+      const rh = y2 - y1;
+      if (prevY2 !== null && y1 - prevY2 > lh * 1.3 && out.length && out[out.length - 1] !== "") {
+        out.push("");
+      }
+      // Table detection: >= 2 consecutive multi-column rows
+      if (r.length >= 2) {
+        let j = i + 1;
+        while (j < rows.length && rows[j].length >= 2) j++;
+        if (j - i >= 2) {
+          const cols = Math.min(8, Math.max(...rows.slice(i, j).map((x) => x.length)));
+          const mkRow = (row: typeof r) =>
+            "| " + Array.from({ length: cols }, (_, c) => (row[c]?.text || "").replace(/\|/g, "\\|")).join(" | ") + " |";
+          out.push(mkRow(rows[i]));
+          out.push("| " + Array(cols).fill("---").join(" | ") + " |");
+          for (let k = i + 1; k < j; k++) out.push(mkRow(rows[k]));
+          out.push("");
+          prevY2 = Math.max(...rows[j - 1].map((x) => x.box[3]));
+          i = j;
+          continue;
+        }
+      }
+      const txt = r.map((x) => x.text).join("   ").trim();
+      if (r.length === 1 && txt.length <= 80 && rh >= lh * 1.32) {
+        out.push(`## ${txt}`);
+      } else if (/^(?:ມາດຕາ|มาตรา|ໝວດ|หมวด|ພາກ|ภาค|ຂໍ້|ข้อ)\s*[\d໐-໙๐-๙]+/.test(txt)) {
+        out.push(`**${txt}**`);
+      } else if (/^[•·▪►\-–]\s*/.test(txt)) {
+        out.push(`- ${txt.replace(/^[•·▪►\-–]\s*/, "")}`);
+      } else {
+        out.push(txt);
+      }
+      prevY2 = y2;
+      i++;
+    }
+    return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
   /** Run complete 100% offline OCR on one or multiple image URIs with per-page rotations */
-  async scanImages(uris: string[], rotations: number | number[] = 0, mode: OcrModelMode = "lao"): Promise<OcrResult> {
+  async scanImages(
+    uris: string[],
+    rotations: number | number[] = 0,
+    mode: OcrModelMode = "lao",
+    outputFormat: OutputFormatMode = "plain"
+  ): Promise<OcrResult> {
     const t0 = Date.now();
     await this.init();
     if (mode === "thai") await this.ensureThaiModel();
@@ -719,19 +794,26 @@ class MobileLaoOcrEngine {
       const deg = Array.isArray(rotations) ? (rotations[i] || 0) : rotations;
       const img = await this.decodeUriToRGBA(uris[i], deg);
       const detLines = await this.detectLines(img);
-      const lines: string[] = [];
+      const items: { box: [number, number, number, number]; text: string }[] = [];
 
       for (const ln of detLines) {
         const txt = await this.recognizeLine(img, ln, mode);
         if (txt && !/^[\.\-_=~*·•\s]+$/.test(txt)) {
-          lines.push(txt);
+          items.push({ box: ln.box, text: txt });
           confSum += this.lastConf;
           confCnt++;
         }
       }
-      totalLines += lines.length;
-      const pageText = lines.join("\n");
-      pages.push(uris.length > 1 ? `===== ໜ້າ ${i + 1}/${uris.length} =====\n${pageText}` : pageText);
+      totalLines += items.length;
+      const pageText =
+        outputFormat === "markdown"
+          ? this.formatPageMarkdown(items)
+          : items.map((x) => x.text).join("\n");
+      const pageHeader =
+        outputFormat === "markdown"
+          ? `# ໜ້າ ${i + 1}/${uris.length}\n\n${pageText}`
+          : `===== ໜ້າ ${i + 1}/${uris.length} =====\n${pageText}`;
+      pages.push(uris.length > 1 ? pageHeader : pageText);
     }
 
     return {

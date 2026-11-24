@@ -14,6 +14,12 @@ export async function exportTxt(text: string): Promise<void> {
   await Sharing.shareAsync(path, { mimeType: "text/plain" });
 }
 
+export async function exportMarkdown(text: string): Promise<void> {
+  const path = `${FileSystem.cacheDirectory}MaeBounmee_OCR_${Date.now()}.md`;
+  await FileSystem.writeAsStringAsync(path, text, { encoding: FileSystem.EncodingType.UTF8 });
+  await Sharing.shareAsync(path, { mimeType: "text/markdown" });
+}
+
 export async function exportDocx(text: string): Promise<void> {
   const paragraphs = text.split(/\r?\n/).map(
     (line) =>
