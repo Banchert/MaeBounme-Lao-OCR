@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="lo">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MaeBounme Lao-OCR</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+
+<body>
+  <header class="header">
+    <div class="brand">
+      <img src="icons/icon48.png" alt="MaeBounme Lao-OCR" class="logo" />
+      <div>
+        <h1>MaeBounme Lao-OCR</h1>
+        <p id="uiSubtitle" class="subtitle">ອ່ານຂໍ້ຄວາມ ລາວ • ໄທ • English (Offline AI)</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="ui-lang-switch" role="group" aria-label="UI Language">
+        <button class="lang-pill active" data-uilang="lo">ລາວ</button>
+        <button class="lang-pill" data-uilang="th">ไทย</button>
+        <button class="lang-pill" data-uilang="en">EN</button>
+      </div>
+      <span id="statusBadge" class="badge loading">AI...</span>
+    </div>
+  </header>
+
+  <div class="quota-bar">
+    <span id="quotaBadge" class="quota-text pro">🕊️ ຟຣີ 100% • Open-Source (ອຸທິດແດ່ ແມ່ບຸນມີ)</span>
+    <button id="openProBtn" class="btn-donate-mini" title="Donate ค่ากาแฟ">☕ Donate</button>
+  </div>
+
+  <main class="container">
+    <div id="promoStrip" class="promo-strip">
+      <div id="promoTags" class="promo-tags">
+        <span class="promo-pill">⚡ ໄວ Offline 100%</span>
+        <span class="promo-pill">🎯 ແມ່ນຍຳ 99.9%</span>
+        <span class="promo-pill">📚 ບໍ່ຈຳກັດເອກະສານ (A4/ໜັງສື/ຕາຕະລາງ/ລາຍມື)</span>
+      </div>
+      <div id="livePerf" class="live-perf" hidden>
+        <div class="perf-cell"><span id="perfTimeLbl" class="perf-lbl">⚡ ຄວາມໄວ</span><b id="perfTime">-</b></div>
+        <div class="perf-cell"><span id="perfSpeedLbl" class="perf-lbl">🚀 ອັດຕາອ່ານ</span><b id="perfSpeed">-</b></div>
+        <div class="perf-cell"><span id="perfConfLbl" class="perf-lbl">🎯 ຄວາມໝັ້ນໃຈ AI</span><b id="perfConf">-</b>
+        </div>
+      </div>
+    </div>
+
+    <div class="actions-row">
+      <label id="uploadDropBtn" class="btn primary file-btn">
+        <span id="uploadLabel">📁 ອັບໂຫຼດ / ລາກວາງ ຮູບພາບ / PDF</span>
+        <input id="fileInput" type="file" accept="image/*,.pdf,application/pdf,.png,.jpg,.jpeg,.webp,.bmp,.gif,.avif"
+          multiple hidden />
+      </label>
+      <button id="snipBtn" class="btn secondary" title="ครอบหน้าจอ" disabled>✂️</button>
+    </div>
+
+    <div class="preview-wrap">
+      <div class="preview-toolbar">
+        <span id="previewBarTitle" class="preview-bar-title">🖼️ ຕົວຢ່າງເອກະສານ (ລາກມຸມຂວາລຸ່ມເພື່ອປັບຂະໜາດ)</span>
+        <div class="preview-bar-btns">
+          <button id="zoomPreviewBtn" class="btn-mini-light" hidden>🔍 ຂະຫຍາຍຕົ້ນສະບັບ</button>
+          <button id="togglePreviewBtn" class="btn-mini-light">🔼 ຫຍໍ້</button>
+        </div>
+      </div>
+      <div id="dropZone" class="drop-zone" tabindex="0" title="คลิกหรือลากวางไฟล์รูปภาพ / PDF ที่นี่">
+        <img id="previewImg" class="preview-img" hidden />
+        <div id="dropHint" class="drop-hint">
+          <div class="drop-icon">📄</div>
+          <div id="dropTitle" class="drop-title">ຄລິກ ຫຼື ລາກວາງ ຮູບພາບ (PNG/JPG/WebP) / ໄຟລ໌ PDF ຫຼື ກົດ Ctrl+V</div>
+          <div id="dropSub" class="drop-sub">ຮອງຮັບຫຼາຍແຜ່ນ, PDF ຫຼາຍໜ້າ, ເຈ້ຍ A4 ແລະ ຄລິກຂວາທີ່ຮູບບົນເວັບ</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="compact-controls">
+      <div class="pill-strip">
+        <div class="seg-group" id="langPills" role="group" title="เลือกภาษา">
+          <button class="seg-btn active" data-lang="auto" title="ตรวจจับภาษาอัตโนมัติ">🤖 Auto</button>
+          <button class="seg-btn" data-lang="lao" title="ภาษาลาวเท่านั้น">🇱🇦 ລາວ</button>
+          <button class="seg-btn" data-lang="lao+en" title="ลาว + อังกฤษ">🇱🇦+EN</button>
+          <button class="seg-btn" data-lang="thai" title="ภาษาไทย (Thai Master R1)">🇹🇭 ไทย</button>
+        </div>
+        <div class="seg-group" id="layoutPills" role="group" title="รูปแบบการจัดหน้า">
+          <button class="seg-btn active" data-layout="paragraph" title="จัดย่อหน้าอัตโนมัติ">📝</button>
+          <button class="seg-btn" data-layout="exact" title="ตรงตามแถวต้นฉบับ">📄</button>
+          <button class="seg-btn" data-layout="markdown" title="ตาราง / Markdown">📊</button>
+          <button class="seg-btn" data-layout="two_col" title="2 คอลัมน์">📰</button>
+        </div>
+        <label class="a4-chip" title="โหมดสแกนกระดาษ A4 (ปรับแสง/เรียงลำดับ)">
+          <input id="a4Toggle" type="checkbox" checked />
+          <span id="a4Label">A4</span>
+        </label>
+        <div id="pageBar" class="page-chip" hidden>
+          <span id="pageLabelEl">📑</span>
+          <select id="pageSelect"></select>
+          <input id="pageRangeInput" class="page-range-input" type="text" placeholder="1-3,5"
+            title="ระบุหน้า เช่น 1-3, 5, 8-10 (เว้นว่าง = ตามที่เลือก)" />
+        </div>
+        <button id="scanNowBtn" class="btn scan-cta-inline" disabled>🚀 ສະແກນ</button>
+      </div>
+      <!-- Hidden selects kept synced for compatibility -->
+      <select id="langSelect" hidden>
+        <option value="auto" selected>auto</option>
+        <option value="lao">lao</option>
+        <option value="lao+en">lao+en</option>
+        <option value="thai">thai</option>
+      </select>
+      <select id="layoutSelect" hidden>
+        <option value="paragraph" selected>paragraph</option>
+        <option value="exact">exact</option>
+        <option value="markdown">markdown</option>
+        <option value="two_col">two_col</option>
+      </select>
+    </div>
+
+    <div id="progressWrap" class="progress-wrap" hidden>
+      <div class="progress-bar">
+        <div id="progressFill" class="progress-fill"></div>
+      </div>
+      <span id="progressText" class="progress-text">0%</span>
+      <button id="cancelScanBtn" class="btn-stop" title="หยุดสแกน">⏹️</button>
+    </div>
+
+    <section class="output-section">
+      <div class="output-header">
+        <div class="ws-tabs" id="wsModeTabs" role="group" title="รูปแบบหน้าต่างตรวจสอบ">
+          <button class="ws-tab active" data-ws="split" id="wsSplitBtn">📑 ຕົ້ນສະບັບ + OCR</button>
+          <button class="ws-tab" data-ws="orig" id="wsOrigBtn">🖼️ ຕົ້ນສະບັບ</button>
+          <button class="ws-tab" data-ws="ocr" id="wsOcrBtn">📝 ຂໍ້ຄວາມ OCR</button>
+        </div>
+        <div class="font-controls">
+          <button id="viewModeBtn" class="btn-mode active" title="สลับโหมดตรวจสี / แก้ไข">🎨 ตรวจสี</button>
+          <button id="fontDecBtn" class="btn-font" title="ลดขนาดตัวอักษร">A-</button>
+          <span id="fontSizeVal" class="font-val">16px</span>
+          <button id="fontIncBtn" class="btn-font" title="เพิ่มขนาดตัวอักษร">A+</button>
+        </div>
+      </div>
+      <div class="style-toolbar">
+        <select id="fontSelect" class="font-select" title="เลือกฟอนต์มาตรฐาน">
+          <option value="'Phetsarath OT', 'Leelawadee UI', sans-serif" selected>🔤 Phetsarath OT (ลาวมาตรฐาน)</option>
+          <option value="'Saysettha OT', 'Phetsarath OT', sans-serif">🔤 Saysettha OT</option>
+          <option value="'TH Sarabun New', 'Leelawadee UI', sans-serif">🔤 TH Sarabun New (ไทยมาตรฐาน)</option>
+          <option value="'Leelawadee UI', 'Noto Sans Thai', 'Noto Sans Lao', sans-serif">🔤 Leelawadee UI</option>
+          <option value="'Noto Sans Lao', 'Noto Sans Thai', sans-serif">🔤 Noto Sans Lao/Thai</option>
+          <option value="'Tahoma', sans-serif">🔤 Tahoma</option>
+        </select>
+        <div class="cat-styles">
+          <span class="cat-group" title="สไตล์ข้อความหลัก (ลาว/ไทย)">
+            <span id="catMainLbl" class="cat-dot main">ລາວ/ໄທ</span>
+            <button class="btn-fmt" data-cat="main" data-prop="bold">B</button>
+            <button class="btn-fmt italic" data-cat="main" data-prop="italic">I</button>
+          </span>
+          <span class="cat-group" title="สไตล์ตัวเลข (สีส้ม)">
+            <span class="cat-dot num">123</span>
+            <button class="btn-fmt active" data-cat="num" data-prop="bold">B</button>
+            <button class="btn-fmt italic" data-cat="num" data-prop="italic">I</button>
+          </span>
+          <span class="cat-group" title="สไตล์ภาษาอังกฤษ (สีน้ำเงิน)">
+            <span class="cat-dot en">ABC</span>
+            <button class="btn-fmt" data-cat="en" data-prop="bold">B</button>
+            <button class="btn-fmt italic active" data-cat="en" data-prop="italic">I</button>
+          </span>
+        </div>
+      </div>
+      <div id="metaInfo" class="meta"></div>
+      <div id="workspaceGrid" class="workspace-grid mode-split">
+        <div id="origPane" class="orig-pane">
+          <div class="orig-pane-bar">
+            <span id="origPaneHeader" class="pane-label">🖼️ ຮູບຕົ້ນສະບັບ</span>
+            <div class="orig-zoom-ctrls">
+              <button id="origZoomOut" class="btn-oz" title="ย่อ (-)">➖</button>
+              <span id="origZoomVal" class="oz-val">100%</span>
+              <button id="origZoomIn" class="btn-oz" title="ขยาย (+)">➕</button>
+              <button id="origZoomFit" class="btn-oz" title="พอดีกรอบ">Fit</button>
+              <button id="origFullBtn" class="btn-oz" title="เต็มจอ">⛶</button>
+            </div>
+          </div>
+          <div id="origGallery" class="orig-gallery">
+            <div class="orig-empty">📄 ຍັງບໍ່ມີເອກະສານ</div>
+          </div>
+        </div>
+        <div id="ocrPane" class="ocr-pane">
+          <div id="outputTitle" class="pane-label">📝 ຂໍ້ຄວາມທີ່ອ່ານໄດ້</div>
+          <div id="richPreview" class="rich-preview" hidden></div>
+          <textarea id="outputText" rows="17" placeholder="..."></textarea>
+        </div>
+      </div>
+      <div class="output-actions">
+        <button id="copyBtn" class="btn success">📋 ຄັດລອກ</button>
+        <button id="downloadBtn" class="btn outline">📄 .txt</button>
+        <button id="downloadWordBtn" class="btn word">📘 Word</button>
+        <button id="clearBtn" class="btn ghost" title="ล้าง">🧹</button>
+      </div>
+      <div id="toast" class="toast" hidden></div>
+      <div class="credit-footer">
+        <span>Lao: MaeBounme R15 • Thai (Free): Thai R2 + พระไตรปิฎก</span>
+        <button id="openCreditsBtn" class="link-btn">ℹ️ รายละเอียดโมเดล</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Full-Screen Original Image Zoom Lightbox -->
+  <div id="zoomModal" class="zoom-backdrop" hidden>
+    <div class="zoom-bar">
+      <button id="zoomOutBtn" class="btn-zoom">➖</button>
+      <span id="zoomVal" class="zoom-val">100%</span>
+      <button id="zoomInBtn" class="btn-zoom">➕</button>
+      <button id="zoomFitBtn" class="btn-zoom">Fit</button>
+      <button id="closeZoomBtn" class="btn-zoom close">✕</button>
+    </div>
+    <div id="zoomStage" class="zoom-stage">
+      <img id="zoomImg" class="zoom-img" alt="Original Preview" />
+    </div>
+  </div>
+
+  <!-- Model Credits Modal -->
+  <div id="creditsModal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <h2>ℹ️ ข้อมูลและเครดิตโมเดล AI</h2>
+      <div class="credit-item">
+        <b>🇱🇦 ໂມເດລພາສາລາວ (MaeBounme Lao-OCR v1.5 — Round 15 All-Conditions Master)</b>
+        <ul class="credit-list">
+          <li><b>สถาปัตยกรรม:</b> PP-OCRv6 Small + SVTR Transformer (11.83 MB FP32, 595 classes)</li>
+          <li><b>จำนวนการ Fine-tune:</b> <b>15 รอบต่อเนื่อง</b> (หนังสือ/PDF + A4 + ลายมือ + ใบบิลเปื้อน + สระบน-ล่างสูง/<b>ຂ-ຊ</b> + <b>6 โหมดเอกสารจริง + กระดาษพับ/คลื่น + บรรทัดชิด/ห่าง</b>)</li>
+          <li><b>ฟอนต์ที่ใช้ฝึก:</b> ฟอนต์ลาว Unicode <b>348 แบบ</b> + <b>Phetsarath OT มาตรฐาน</b></li>
+          <li><b>ระบบเสริม Offline:</b> ดัดแถวเอียง/เป็นคลื่นอัตโนมัติ + <b>คลังคำศัพท์ลาว 33,604 คำ</b> แก้คำผิดอัตโนมัติ</li>
+          <li><b>ความแม่นยำ (Round 15):</b> หนังสือลาว <b>99.97%</b> • PDF ราชการ <b>99.80%</b> • สระล่าง ຸ ູ ຼ <b>99.48%</b> • ฟอนต์ใหม่ <b>98.18%</b> • ลายมือ <b>97.3%</b> • EN <b>100%</b></li>
+          <li><b>สัญญาอนุญาต:</b> Open-Source (Apache-2.0) 🕊️ อุทิศแด่ แม่บุญมี</li>
+        </ul>
+      </div>
+      <div class="credit-item">
+        <b>🇹🇭 โมเดลภาษาไทย (MaeBounme Thai Print R2 + พระไตรปิฎก 45 เล่ม — ฟรี 100%)</b>
+        <ul class="credit-list">
+          <li><b>สถาปัตยกรรม:</b> PP-OCRv6 Small + SVTR Transformer (11.83 MB FP32, 595 classes)</li>
+          <li><b>คลังข้อมูลฝึกเพิ่ม:</b> <b>1,804,055 บรรทัด</b> + <b>พระไตรปิฎกสยามรัฐ 45 เล่ม (532,988 บรรทัด)</b> + <b>จำลองเอกสารจริง 8 โหมด (20,000 บรรทัด)</b></li>
+          <li><b>ฟอนต์ไทยมาตรฐาน:</b> คัดเฉพาะ <b>166 ฟอนต์ตัวพิมพ์ทางการ/หนังสือล้วน</b></li>
+          <li><b>ความแม่นยำ (R2):</b> เอกสารไทยมาตรฐาน <b>99.98%</b> (ตรงเป๊ะ <b>99.7%</b>) • อังกฤษ <b>100%</b></li>
+          <li><b>เครดิตฐานโอเพนซอร์ส:</b> ต่อยอดบนสถาปัตยกรรม PP-OCRv6 / OpenThai OCR (Apache-2.0)</li>
+        </ul>
+      </div>
+      <div class="credit-item">
+        <b>📐 ตัวตรวจจับบรรทัด (Text Detector + Wavy Dewarp)</b><br />
+        PP-OCRv6 DB Detector (Apache-2.0, 1.70 MB) + ดัดแถวเอียง/คลื่นอัตโนมัติ • รัน Offline 100% ผ่าน ONNX Runtime Web (WASM)
+      </div>
+      <div class="modal-actions">
+        <button id="closeCreditsBtn" class="btn primary">ปิด</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Voluntary Donate Coffee Modal -->
+  <div id="proModal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <h2 id="proTitle">☕ ສະໜັບສະໜູນຄ່າກາແຟ (Donate)</h2>
+      <div id="dedicationBox" class="dedication-box"></div>
+      <p id="proDesc" class="modal-desc"></p>
+      <div id="proContact" class="contact-box"></div>
+      <button id="supportLinkBtn" class="btn whatsapp full-w">💬 ຕິດຕໍ່ WhatsApp: 020 5959 2939</button>
+      <div class="modal-actions">
+        <button id="closeProBtn" class="btn secondary">ປິດ</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="lib/ort.wasm.min.js"></script>
+  <script src="lib/pdf.min.js"></script>
+  <script src="i18n.js"></script>
+  <script src="licensing.js"></script>
+  <script src="ocr_engine.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+
+</html>
