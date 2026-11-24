@@ -19,6 +19,13 @@ export default function HomeScreen({ uiLang, setUiLang, onResult }: Props) {
   const [modelMode, setModelMode] = useState<OcrModelMode>("lao");
   const [busy, setBusy] = useState(false);
   const [donateOpen, setDonateOpen] = useState(false);
+  const [activeQr, setActiveQr] = useState<"lak" | "usd" | "thb" | null>(null);
+
+  const QR_IMAGES = {
+    lak: require("../../assets/images/qr_lak.jpg"),
+    usd: require("../../assets/images/qr_usd.jpg"),
+    thb: require("../../assets/images/qr_thb.jpg")
+  };
 
   const pickCamera = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
@@ -193,14 +200,33 @@ export default function HomeScreen({ uiLang, setUiLang, onResult }: Props) {
               <Text style={styles.contactLine}>👤 ຜູ້ພັດທະນາ: {DONATE_INFO.DEVELOPER_NAME}</Text>
               <Text style={styles.contactLine}>📘 Facebook: {DONATE_INFO.FACEBOOK_NAME}</Text>
               <Text style={styles.contactLine}>📱 WhatsApp: {DONATE_INFO.WHATSAPP_DISPLAY}</Text>
-              {DONATE_INFO.BANK_LINES.map((ln, idx) => (
-                <Text key={idx} style={styles.contactLine}>{ln}</Text>
+            </View>
+            <View style={styles.qrBtnRow}>
+              {(
+                [
+                  ["lak", "📱 QR ກີບ (LAK)"],
+                  ["usd", "💵 QR USD"],
+                  ["thb", "🇹🇭 QR ບາດ"]
+                ] as ["lak" | "usd" | "thb", string][]
+              ).map(([k, lbl]) => (
+                <TouchableOpacity
+                  key={k}
+                  style={[styles.qrBtn, activeQr === k && styles.qrBtnActive]}
+                  onPress={() => setActiveQr((prev) => (prev === k ? null : k))}
+                >
+                  <Text style={[styles.qrBtnTxt, activeQr === k && styles.qrBtnTxtActive]}>{lbl}</Text>
+                </TouchableOpacity>
               ))}
             </View>
+            {activeQr && (
+              <View style={styles.qrPreviewBox}>
+                <Image source={QR_IMAGES[activeQr]} style={styles.qrImg} resizeMode="contain" />
+              </View>
+            )}
             <TouchableOpacity style={[styles.actionBtn, styles.whatsapp]} onPress={() => Linking.openURL(DONATE_INFO.WHATSAPP_URL)}>
               <Text style={styles.btnText}>💬 WhatsApp: {DONATE_INFO.WHATSAPP_DISPLAY}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.actionBtn, styles.secondary]} onPress={() => setDonateOpen(false)}>
+            <TouchableOpacity style={[styles.actionBtn, styles.secondary]} onPress={() => { setActiveQr(null); setDonateOpen(false); }}>
               <Text style={styles.btnTextDark}>{t.closeBtn}</Text>
             </TouchableOpacity>
           </View>
@@ -260,5 +286,12 @@ const styles = StyleSheet.create({
   dedicationText: { fontSize: 12.5, color: "#78350f", lineHeight: 18 },
   modalBody: { fontSize: 13, color: "#475569", lineHeight: 19 },
   contactBox: { backgroundColor: "#f1f5f9", borderRadius: 8, padding: 10, gap: 4 },
-  contactLine: { fontSize: 12.5, color: "#0f172a", fontWeight: "600" }
+  contactLine: { fontSize: 12.5, color: "#0f172a", fontWeight: "600" },
+  qrBtnRow: { flexDirection: "row", gap: 6 },
+  qrBtn: { flex: 1, paddingVertical: 8, paddingHorizontal: 4, borderRadius: 8, backgroundColor: "#e2e8f0", alignItems: "center" },
+  qrBtnActive: { backgroundColor: "#1d4ed8" },
+  qrBtnTxt: { fontSize: 11, fontWeight: "700", color: "#0f172a" },
+  qrBtnTxtActive: { color: "#fff" },
+  qrPreviewBox: { backgroundColor: "#fff", borderRadius: 10, borderWidth: 1, borderColor: "#cbd5e1", padding: 8, alignItems: "center" },
+  qrImg: { width: 220, height: 260 }
 });

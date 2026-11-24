@@ -241,8 +241,7 @@ function applyUiLang(lang) {
   $("proContact").innerHTML =
     `<b>👤 ຜູ້ພັດທະນາ:</b> ${LICENSING.DEVELOPER_NAME}<br/>` +
     `<b>📘 Facebook:</b> ${LICENSING.FACEBOOK_NAME}<br/>` +
-    `<b>📱 WhatsApp:</b> ${LICENSING.WHATSAPP_DISPLAY}<br/>` +
-    LICENSING.BANK_INFO.join("<br/>");
+    `<b>📱 WhatsApp:</b> ${LICENSING.WHATSAPP_DISPLAY}`;
   supportLinkBtn.textContent = `💬 WhatsApp: ${LICENSING.WHATSAPP_DISPLAY}`;
   closeProBtn.textContent = t("proCloseBtn");
   if (ocr.ready) setStatus(t("ready"), "ready");
@@ -876,11 +875,32 @@ creditsModal.addEventListener("click", (e) => {
   if (e.target === creditsModal) creditsModal.hidden = true;
 });
 
-// Donate Modal events
-openProBtn.addEventListener("click", () => openProModal());
-closeProBtn.addEventListener("click", () => (proModal.hidden = true));
+// Donate Modal events + collapsible QR toggle (LAK / USD / THB)
+const donateQrBox = $("donateQrBox");
+const donateQrImg = $("donateQrImg");
+const qrToggleBtns = Array.from(document.querySelectorAll(".qr-toggle-btn"));
+function hideDonateQr() {
+  if (donateQrBox) donateQrBox.hidden = true;
+  if (donateQrImg) donateQrImg.src = "";
+  qrToggleBtns.forEach((b) => { b.classList.remove("primary"); b.classList.add("secondary"); });
+}
+qrToggleBtns.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const src = chrome.runtime.getURL(btn.dataset.qr);
+    const isSame = !donateQrBox.hidden && donateQrImg.src === src;
+    hideDonateQr();
+    if (!isSame) {
+      donateQrImg.src = src;
+      donateQrBox.hidden = false;
+      btn.classList.remove("secondary");
+      btn.classList.add("primary");
+    }
+  });
+});
+openProBtn.addEventListener("click", () => { hideDonateQr(); openProModal(); });
+closeProBtn.addEventListener("click", () => { hideDonateQr(); proModal.hidden = true; });
 proModal.addEventListener("click", (e) => {
-  if (e.target === proModal) proModal.hidden = true;
+  if (e.target === proModal) { hideDonateQr(); proModal.hidden = true; }
 });
 supportLinkBtn.addEventListener("click", () => {
   chrome.tabs.create({ url: LICENSING.SUPPORT_URL });
