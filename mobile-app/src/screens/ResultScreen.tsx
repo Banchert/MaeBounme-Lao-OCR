@@ -1,9 +1,12 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Image,
+  Keyboard,
+  KeyboardAvoidingView,
   Linking,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -28,6 +31,7 @@ interface Props {
   lineCount: number;
   images: string[];
   rotations: number[];
+  lowConfWords?: Record<string, number>;
   onBack: () => void;
 }
 
@@ -63,6 +67,7 @@ export default function ResultScreen({
   lineCount,
   images,
   rotations,
+  lowConfWords = {},
   onBack
 }: Props) {
   const t = TRANSLATIONS[uiLang];
@@ -73,7 +78,10 @@ export default function ResultScreen({
 
   const [fontSize, setFontSize] = useState(17);
   const [fontIdx, setFontIdx] = useState(0);
-  const [colorMode, setColorMode] = useState(false);
+  // Read-only scrollable mode by default so mobile keyboard NEVER pops up when scrolling/viewing!
+  const [isEditing, setIsEditing] = useState(false);
+  const [colorMode, setColorMode] = useState(true);
+  const editorRef = useRef<TextInput>(null);
   const [catStyles, setCatStyles] = useState<Record<CatKey, CatStyle>>({
     main: { bold: false, italic: false },
     num: { bold: true, italic: false },
@@ -84,6 +92,16 @@ export default function ResultScreen({
   // Keyboard-style word suggestion state
   const [cursorWord, setCursorWord] = useState<{ word: string; start: number; end: number } | null>(null);
   const [selectedSuspect, setSelectedSuspect] = useState<string | null>(null);
+
+  const startEditing = () => {
+    setIsEditing(true);
+    setTimeout(() => editorRef.current?.focus(), 80);
+  };
+
+  const stopEditing = () => {
+    Keyboard.dismiss();
+    setIsEditing(false);
+  };
 
   // Feedback modal state
   const [fbOpen, setFbOpen] = useState(false);
@@ -106,24 +124,62 @@ export default function ResultScreen({
     }));
   };
 
+  const suspects = useMemo(() => findSuspectLaoWords(text, 12), [text]);
+  const suspectSet = useMemo(() => new Set(suspects.map((s) => s.word)), [suspects]);
+
+  // Split text into display tokens preserving whitespace/newlines while tagging numbers, English,
+  // and low-confidence / suspect words (for orange underline highlighting!)
   const tokens = useMemo(() => {
-    const out: { text: string; cat: CatKey }[] = [];
-    const re = /([0-9໐-໙๐-๙]+(?:[.,:/\-][0-9໐-໙๐-๙]+)*)|([A-Za-z]+(?:['’\-][A-Za-z]+)*)/g;
-    let last = 0;
+    const out: { text: string; cat: CatKey; lowConfPct: number | null; isSuspect: boolean }[] = [];
+    const re = /(\s+)|([0-9໐-໙๐-๙]+(?:[.,:/\-][0-9໐-໙๐-๙]+)*)|([A-Za-z]+(?:['’\-][A-Za-z]+)*)|([^\s0-9໐-໙๐-๙A-Za-z]+)/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
-      if (m.index > last) out.push({ text: text.slice(last, m.index), cat: "main" });
-      if (m[1]) out.push({ text: m[1], cat: "num" });
-      else if (m[2]) out.push({ text: m[2], cat: "en" });
-      last = re.lastIndex;
+      const seg = m[0];
+      if (m[1]) {
+        out.push({ text: seg, cat: "main", lowConfPct: null, isSuspect: false });
+      } else if (m[2]) {
+        const clean = seg.trim();
+        const pct = lowConfWords[clean] ?? null;
+        out.push({ text: seg, cat: "num", lowConfPct: pct, isSuspect: pct !== null });
+      } else if (m[3]) {
+        const clean = seg.trim();
+        const pct = lowConfWords[clean] ?? null;
+        out.push({ text: seg, cat: "en", lowConfPct: pct, isSuspect: pct !== null });
+      } else {
+        // Sub-split Lao/punctuation chunk so punctuation doesn't break word matching
+        const subRe = /([\u0E80-\u0EFF]+)|([^\u0E80-\u0EFF]+)/g;
+        let sm: RegExpExecArray | null;
+        while ((sm = subRe.exec(seg)) !== null) {
+          const w = sm[0];
+          const pct = lowConfWords[w] ?? null;
+          const susp = pct !== null || suspectSet.has(w);
+          out.push({ text: w, cat: "main", lowConfPct: pct, isSuspect: susp });
+        }
+      }
     }
-    if (last < text.length) out.push({ text: text.slice(last), cat: "main" });
     return out;
-  }, [text]);
+  }, [text, lowConfWords, suspectSet]);
 
-  const suspects = useMemo(() => findSuspectLaoWords(text, 8), [text]);
+  const lowConfList = useMemo(() => {
+    const merged: { word: string; confPct: number | null }[] = [];
+    const seen = new Set<string>();
+    for (const [w, pct] of Object.entries(lowConfWords)) {
+      if (text.includes(w) && !seen.has(w)) {
+        seen.add(w);
+        merged.push({ word: w, confPct: pct });
+      }
+    }
+    for (const s of suspects) {
+      if (!seen.has(s.word)) {
+        seen.add(s.word);
+        merged.push({ word: s.word, confPct: lowConfWords[s.word] ?? null });
+      }
+    }
+    return merged.sort((a, b) => (a.confPct ?? 78) - (b.confPct ?? 78));
+  }, [text, lowConfWords, suspects]);
 
-  const activeWord = cursorWord?.word || selectedSuspect || (suspects[0]?.word ?? "");
+  const activeWord = cursorWord?.word || selectedSuspect || (lowConfList[0]?.word ?? "");
+  const activeConfPct = activeWord ? (lowConfWords[activeWord] ?? null) : null;
   const activeSuggestions = useMemo(() => {
     if (!activeWord) return [];
     return suggestLaoWords(activeWord, 6);
@@ -262,7 +318,10 @@ export default function ResultScreen({
   };
 
   return (
-    <View style={styles.wrap}>
+    <KeyboardAvoidingView
+      style={styles.wrap}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+    >
       <View style={styles.header}>
         <TouchableOpacity onPress={onBack}>
           <Text style={styles.back}>{t.backBtn}</Text>
@@ -306,26 +365,38 @@ export default function ResultScreen({
 
       <View style={styles.perfRow}>
         <Text style={styles.perfPill}>⚡ {sec.toFixed(2)}s</Text>
-        <Text style={styles.perfPill}>🚀 {cps} อักษร/วิ</Text>
         <Text style={styles.perfPill}>🎯 AI {avgConf}%</Text>
         <Text style={styles.perfPill}>📄 {lineCount} แถว</Text>
+        <Text style={[styles.perfPill, lowConfList.length > 0 && { color: "#c2410c" }]}>
+          {lowConfList.length > 0 ? `⚠️ ${lowConfList.length} คำไม่มั่นใจ` : "✅ มั่นใจสูง"}
+        </Text>
       </View>
 
       {(viewTab === "split" || viewTab === "orig") && renderOriginalPane(viewTab === "orig")}
 
       {viewTab !== "orig" && (
         <>
-          {/* Font Picker + Color Proofread / Edit Toggle + Category Bold/Italic */}
+          {/* Edit / Read-Only Toggle + Color Proofread + Font Picker */}
           <View style={styles.styleBar}>
             <View style={styles.styleTopRow}>
               <TouchableOpacity
-                style={[styles.modePill, colorMode && styles.modePillActive]}
-                onPress={() => setColorMode((v) => !v)}
+                style={[styles.editToggleBtn, isEditing && styles.editToggleBtnActive]}
+                onPress={isEditing ? stopEditing : startEditing}
               >
-                <Text style={[styles.modePillTxt, colorMode && styles.modePillTxtActive]}>
-                  {colorMode ? "🎨 ตรวจสี" : "✏️ แก้ไข"}
+                <Text style={[styles.editToggleTxt, isEditing && styles.editToggleTxtActive]}>
+                  {isEditing ? "✅ เสร็จสิ้น" : "✏️ แก้ไข"}
                 </Text>
               </TouchableOpacity>
+              {!isEditing && (
+                <TouchableOpacity
+                  style={[styles.modePill, colorMode && styles.modePillActive]}
+                  onPress={() => setColorMode((v) => !v)}
+                >
+                  <Text style={[styles.modePillTxt, colorMode && styles.modePillTxtActive]}>
+                    {colorMode ? "🎨 สีเปิด" : "🎨 สีปิด"}
+                  </Text>
+                </TouchableOpacity>
+              )}
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 5 }}>
                 {FONT_OPTIONS.map((f, idx) => (
                   <TouchableOpacity
@@ -365,11 +436,15 @@ export default function ResultScreen({
             </View>
           </View>
 
-          {/* Mobile Keyboard-Style Predictive Word Suggestion Bar */}
-          {(activeSuggestions.length > 0 || suspects.length > 0) && (
+          {/* Confidence Alert + Predictive Word Suggestion Bar */}
+          {(activeSuggestions.length > 0 || lowConfList.length > 0) && (
             <View style={styles.suggestBar}>
               <Text style={styles.suggestTitle}>
-                {t.suggestBar} {activeWord ? `「${activeWord}」` : ""}
+                {activeWord
+                  ? activeConfPct !== null
+                    ? `⚠️ ไม่มั่นใจ 「${activeWord}」 (มั่นใจ ${activeConfPct}% • เสี่ยงผิด ${100 - activeConfPct}%)`
+                    : `${t.suggestBar} 「${activeWord}」`
+                  : t.suggestBar}
               </Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
                 {activeSuggestions.map((s) => (
@@ -377,36 +452,62 @@ export default function ResultScreen({
                     <Text style={[styles.sugChipTxt, { fontFamily: activeFont }]}>{s}</Text>
                   </TouchableOpacity>
                 ))}
-                {suspects.length > 1 &&
-                  suspects.slice(0, 5).map((item) => (
-                    <TouchableOpacity
-                      key={item.word}
-                      style={[styles.suspectChip, activeWord === item.word && styles.suspectChipActive]}
-                      onPress={() => {
-                        setCursorWord(null);
-                        setSelectedSuspect(item.word);
-                      }}
-                    >
-                      <Text style={styles.suspectChipTxt}>? {item.word}</Text>
-                    </TouchableOpacity>
-                  ))}
+                {lowConfList.slice(0, 8).map((item) => (
+                  <TouchableOpacity
+                    key={item.word}
+                    style={[styles.suspectChip, activeWord === item.word && styles.suspectChipActive]}
+                    onPress={() => {
+                      setCursorWord(null);
+                      setSelectedSuspect(item.word);
+                    }}
+                  >
+                    <Text style={styles.suspectChipTxt}>
+                      ⚠️ {item.word}{item.confPct !== null ? ` (${100 - item.confPct}%)` : ""}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
               </ScrollView>
             </View>
           )}
 
-          {colorMode ? (
-            <ScrollView style={styles.richBox} contentContainerStyle={{ padding: 14 }}>
-              <Text selectable style={{ fontFamily: activeFont, fontSize, lineHeight: Math.round(fontSize * 1.65) }}>
+          {!isEditing ? (
+            <ScrollView
+              style={styles.richBox}
+              contentContainerStyle={{ padding: 14, paddingBottom: 28 }}
+              showsVerticalScrollIndicator={true}
+              persistentScrollbar={true}
+              nestedScrollEnabled={true}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Text style={{ fontFamily: activeFont, fontSize, lineHeight: Math.round(fontSize * 1.72) }}>
                 {tokens.map((tk, i) => {
                   const st = catStyles[tk.cat];
-                  const color = tk.cat === "num" ? "#c2410c" : tk.cat === "en" ? "#1d4ed8" : "#0f172a";
+                  const baseColor = colorMode
+                    ? tk.cat === "num"
+                      ? "#c2410c"
+                      : tk.cat === "en"
+                        ? "#1d4ed8"
+                        : "#0f172a"
+                    : "#0f172a";
+                  const isFlagged = tk.isSuspect;
                   return (
                     <Text
                       key={i}
+                      onPress={
+                        isFlagged
+                          ? () => {
+                              setCursorWord(null);
+                              setSelectedSuspect(tk.text.trim());
+                            }
+                          : undefined
+                      }
                       style={{
-                        color,
+                        color: baseColor,
                         fontWeight: st.bold ? "700" : "400",
-                        fontStyle: st.italic ? "italic" : "normal"
+                        fontStyle: st.italic ? "italic" : "normal",
+                        textDecorationLine: isFlagged ? "underline" : "none",
+                        textDecorationColor: isFlagged ? "#f97316" : undefined,
+                        backgroundColor: isFlagged ? "#fff7ed" : "transparent"
                       }}
                     >
                       {tk.text}
@@ -417,6 +518,7 @@ export default function ResultScreen({
             </ScrollView>
           ) : (
             <TextInput
+              ref={editorRef}
               style={[
                 styles.editor,
                 {
@@ -428,6 +530,7 @@ export default function ResultScreen({
                 }
               ]}
               multiline
+              scrollEnabled
               value={text}
               onChangeText={setText}
               onSelectionChange={handleSelectionChange}
@@ -507,7 +610,7 @@ export default function ResultScreen({
           </View>
         </View>
       </Modal>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -533,6 +636,10 @@ const styles = StyleSheet.create({
   miniChipTxt: { color: "#fff", fontSize: 11, fontWeight: "700" },
   styleBar: { backgroundColor: "#fff", borderBottomWidth: 1, borderColor: "#e2e8f0", paddingHorizontal: 10, paddingVertical: 6, gap: 5 },
   styleTopRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  editToggleBtn: { borderWidth: 1.5, borderColor: "#2563eb", backgroundColor: "#eff6ff", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 7 },
+  editToggleBtnActive: { backgroundColor: "#059669", borderColor: "#059669" },
+  editToggleTxt: { fontSize: 11.5, fontWeight: "800", color: "#1d4ed8" },
+  editToggleTxtActive: { color: "#ffffff" },
   modePill: { borderWidth: 1, borderColor: "#cbd5e1", backgroundColor: "#f8fafc", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   modePillActive: { backgroundColor: "#eff6ff", borderColor: "#2563eb" },
   modePillTxt: { fontSize: 11, fontWeight: "700", color: "#334155" },

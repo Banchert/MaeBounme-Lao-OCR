@@ -8,7 +8,15 @@ import { DONATE_INFO } from "../services/monetization";
 interface Props {
   uiLang: UiLang;
   setUiLang: (l: UiLang) => void;
-  onResult: (text: string, ms: number, avgConf: number, lineCount: number, images: string[], rotations: number[]) => void;
+  onResult: (
+    text: string,
+    ms: number,
+    avgConf: number,
+    lineCount: number,
+    images: string[],
+    rotations: number[],
+    lowConfWords: Record<string, number>
+  ) => void;
 }
 
 export default function HomeScreen({ uiLang, setUiLang, onResult }: Props) {
@@ -71,7 +79,7 @@ export default function HomeScreen({ uiLang, setUiLang, onResult }: Props) {
     setBusy(true);
     try {
       const res = await mobileOcr.scanImages(images, rotations, modelMode, outputFormat);
-      onResult(res.text, res.ms, res.avgConf, res.lineCount, images, rotations);
+      onResult(res.text, res.ms, res.avgConf, res.lineCount, images, rotations, res.lowConfWords || {});
     } catch (e: any) {
       Alert.alert("OCR Error", e?.message || "Scan failed");
     } finally {

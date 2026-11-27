@@ -22,18 +22,20 @@
 - **🔒 100% Offline & Private** — Runs completely on your device (Android / Chrome / Desktop). Your photos and confidential documents are **never** uploaded to any cloud server.
 - **⚡ Lightweight & Fast** — Compact ONNX models (`~11.8 MB` per language) with high accuracy across Lao, Thai, and English text.
 - **📄 Photos & Multi-Page PDFs** — Scan single or multi-page images and PDFs with page-range selection and per-page 90° rotation.
-- **📐 Smart Line Rectification** — Handles real-world scans, tilted/wavy lines, low-contrast photos, receipts, and tightly-spaced documents.
+- **📐 Smart Page & Row Rectification** — Auto perspective dewarp (4-corner), 90° orientation fix, wide-angle deskew (±25°), and per-row curved baseline straightening before OCR.
+- **🧾 Single-Pass Unified OCR (Text + Markdown Tables + Bill Auto-Checker)** — One model outputs Plain Text, structured Markdown tables (`.md`), and automatic receipt/bill math verification (`qty × price` & Grand Total check).
+- **🎯 Per-Word Confidence Highlights & Mobile UX** — Low-confidence words (`<85%`) are automatically underlined in orange with error-risk %, and mobile results open in a smooth read-only scroll view (keyboard only opens when tapping Edit).
 - **💡 Built-in Lao Lexicon & Word Suggestions** — Offline Lao vocabulary post-correction and tap-to-fix word suggestions.
-- **📑 Side-by-Side Comparison & Export** — Compare original document alongside OCR output, color-coded proofreading, 1-tap copy, and free `.txt` / Word (`.docx`) export.
+- **📑 Side-by-Side Comparison & Export** — Compare original document alongside OCR output, color-coded proofreading, 1-tap copy, and free `.txt` / `.md` / Word (`.docx`) export.
 - **🕊️ Free Forever** — Zero ads, zero subscriptions, zero page limits.
 
 ---
 
 ## 📦 Downloads (Releases)
 
-Check the **[Releases](../../releases)** page to download ready-to-use packages:
-- **Android App (`.apk`)**: `MaeBounme-Lao-OCR-v1.5.0.apk`
-- **Chrome Side Panel Extension (`.zip`)**: `MaeBounme-Lao-OCR-v1.0.0.zip`
+Check the **[Releases](https://github.com/Banchert/MaeBounme-Lao-OCR/releases)** page to download ready-to-use packages:
+- **Android App (`.apk`)**: `MaeBounme-Lao-OCR-v1.7.0.apk` (Round 18 All-343-Fonts + Confidence Underlines + Keyboard Lock)
+- **Chrome Side Panel Extension (`.zip`)**: `MaeBounme-Lao-OCR-v1.2.0.zip` (Round 18 All-343-Fonts)
 
 ---
 

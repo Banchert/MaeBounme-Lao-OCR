@@ -232,6 +232,8 @@ export interface OcrResult {
   lineCount: number;
   ms: number;
   avgConf: number;
+  /** Map of low-confidence words (< 85% CTC confidence) -> lowest confidence percentage (0-100) */
+  lowConfWords: Record<string, number>;
 }
 
 interface RawRGBA {
@@ -256,6 +258,7 @@ class MobileLaoOcrEngine {
   private ready = false;
   private thaiReady = false;
   private lastConf = 0;
+  private lastLowConfWords: Record<string, number> = {};
 
   async init(): Promise<void> {
     if (this.ready) return;
@@ -668,6 +671,7 @@ class MobileLaoOcrEngine {
     let prev = -1;
     let confSum = 0;
     let confCnt = 0;
+    const charConfs: number[] = [];
 
     for (let t = 0; t < T; t++) {
       let bestIdx = 0;
@@ -680,26 +684,65 @@ class MobileLaoOcrEngine {
           bestIdx = c;
         }
       }
+      let charConf = 1;
       if (bestIdx !== 0 && bestIdx !== prev && bestIdx < chars.length) {
-        text += chars[bestIdx];
+        const ch = chars[bestIdx];
+        text += ch;
         let rowSum = 0;
         for (let c = 0; c < C; c++) rowSum += probs[base + c];
         if (bestVal >= 0 && bestVal <= 1.001 && rowSum > 0.95 && rowSum < 1.05) {
-          confSum += bestVal;
+          charConf = bestVal;
         } else {
           let sumExp = 0;
           for (let c = 0; c < C; c++) {
             const d = probs[base + c] - bestVal;
             if (d > -20) sumExp += Math.exp(d);
           }
-          confSum += sumExp > 0 ? 1 / sumExp : 1;
+          charConf = sumExp > 0 ? 1 / sumExp : 1;
         }
+        confSum += charConf;
         confCnt++;
+        charConfs.push(charConf);
       }
       prev = bestIdx;
     }
 
     this.lastConf = confCnt > 0 ? confSum / confCnt : 0;
+    this.lastLowConfWords = {};
+    // Compute per-word CTC confidence (flag words with avg < 85% or min < 68%)
+    let wStart = -1;
+    for (let i = 0; i <= text.length; i++) {
+      const ch = i < text.length ? text[i] : " ";
+      const isSep = /[\s,.;:!?()[\]{}"'\/\\|]/.test(ch);
+      if (!isSep && wStart === -1) {
+        wStart = i;
+      } else if (isSep && wStart !== -1) {
+        const word = text.slice(wStart, i).replace(/ໍ\u0eb2/g, "ຳ").trim();
+        if (word.length >= 1) {
+          let wSum = 0;
+          let wMin = 1;
+          let wCnt = 0;
+          for (let k = wStart; k < i && k < charConfs.length; k++) {
+            const p = charConfs[k];
+            wSum += p;
+            if (p < wMin) wMin = p;
+            wCnt++;
+          }
+          if (wCnt > 0) {
+            const wAvg = wSum / wCnt;
+            const scorePct = Math.round(Math.min(wAvg, (wAvg + wMin) * 0.5) * 100);
+            if (scorePct < 85) {
+              const prevPct = this.lastLowConfWords[word];
+              if (prevPct === undefined || scorePct < prevPct) {
+                this.lastLowConfWords[word] = scorePct;
+              }
+            }
+          }
+        }
+        wStart = -1;
+      }
+    }
+
     if (useThai) return text.trim();
     const cleaned = text.replace(/ໍ\u0eb2/g, "ຳ").trim();
     return correctLaoLine(cleaned);
@@ -789,6 +832,7 @@ class MobileLaoOcrEngine {
     let totalLines = 0;
     let confSum = 0;
     let confCnt = 0;
+    const lowConfWords: Record<string, number> = {};
 
     for (let i = 0; i < uris.length; i++) {
       const deg = Array.isArray(rotations) ? (rotations[i] || 0) : rotations;
@@ -802,6 +846,11 @@ class MobileLaoOcrEngine {
           items.push({ box: ln.box, text: txt });
           confSum += this.lastConf;
           confCnt++;
+          for (const [w, pct] of Object.entries(this.lastLowConfWords)) {
+            if (lowConfWords[w] === undefined || pct < lowConfWords[w]) {
+              lowConfWords[w] = pct;
+            }
+          }
         }
       }
       totalLines += items.length;
@@ -820,7 +869,8 @@ class MobileLaoOcrEngine {
       text: pages.join("\n\n"),
       lineCount: totalLines,
       ms: Date.now() - t0,
-      avgConf: confCnt > 0 ? Math.round((confSum / confCnt) * 1000) / 10 : 0
+      avgConf: confCnt > 0 ? Math.round((confSum / confCnt) * 1000) / 10 : 0,
+      lowConfWords
     };
   }
 }

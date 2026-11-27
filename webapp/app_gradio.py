@@ -12,11 +12,15 @@ import gradio as gr
 
 from lao_ocr.core import Codec
 from lao_ocr.layout import is_junk_line, segment_page, to_tensor
+from lao_ocr.bill_checker import check_bill
 
 ROOT = Path(__file__).resolve().parent
 # Prefer newly trained Tri-lingual model (Lao + Thai + English)
 # First existing model wins: newest training first.
 MODEL_CANDIDATES = [
+    ROOT / "runs" / "gpu-lao-r18-allfonts-5000" / "onnx",       # Round 18: ALL 343 Lao Fonts Equal-Quota (5,000+ / Font)
+    ROOT / "runs" / "gpu-lao-r17-skew-screen" / "onnx",         # Round 17: Extreme Skew Camera + Simulated Screen-Photo
+    ROOT / "runs" / "gpu-lao-r16-overnight-subvowel" / "onnx",  # Round 16: Extreme Sub-Vowel (ຸ ູ ຼ) & Tall-Mark Mastery
     ROOT / "runs" / "gpu-lao-r15-warped-a4" / "onnx",        # Round 15: All-Conditions Real-World + Warped/Wavy + Tight/Wide Spacing
     ROOT / "runs" / "gpu-lao-r14-tallmarks-khoso" / "onnx",  # Round 14: Tall Stacked Marks + ຂ/ຊ + Worn Fonts
     ROOT / "runs" / "gpu-lao-r13-phetsarath-subvowel" / "onnx", # Round 13: Phetsarath OT + Sub-Vowel Precision
@@ -291,7 +295,7 @@ print("Line finder:", "text detector (PP-OCRv6 DB)" if DETECTOR_OK else
       f"projection cutting ({getattr(detlayout, '_ERR', None) or LAYOUT})")
 
 
-def _detector_rows(img):
+def _detector_rows(img, rectify: bool = True):
     """rows of (crop, quad_box) from the learned detector, or None to use projection cutting"""
     if not DETECTOR_OK:
         return None
@@ -300,29 +304,34 @@ def _detector_rows(img):
     if is_single_line(gray if gray.mean() >= 127 else 255 - gray):
         return None  # a single cropped line: read it as it is
     try:
-        rows, info = detlayout.read_rows_with_boxes(img)
+        rows, info = detlayout.read_rows_with_boxes(img, rectify=rectify)
     except Exception as exc:
         print("detector failed, using projection cutting:", exc)
         return None
     return (rows, info) if rows else None
 
 
-def run_ocr(input_image, lang=LANG_AUTO, use_lm=True, keep_lines=False, as_markdown=False):
+def run_ocr(input_image, lang=LANG_AUTO, use_lm=True, keep_lines=False, as_markdown=False, rectify=True):
+    """Single-pass unified OCR: returns (plain_text, md_text, bill_html, lat_str, char_count, res_str, rectified_img)."""
     if input_image is None:
         return (
             "กรุณาอัปโหลดหรือเลือกรูปภาพตัวอย่างก่อนครับ",
+            "",
+            check_bill("").to_html(),
             "0.0 ms",
             "0 ตัวอักษร",
             "-",
+            None,
         )
 
     t0 = time.time()
     h, w = input_image.shape[:2]
     res_str = f"{w} × {h} px"
 
-    # Works for both a single line crop and a whole page: the page is cut into
-    # text lines (resolution independent), each line goes to the recognizer.
-    det_rows = _detector_rows(input_image)
+    # Works for both a single line crop and a whole page: the page is rectified,
+    # cut into straightened text lines, and each line goes to the recognizer ONCE,
+    # producing Plain Text + Markdown Table + Bill Calculation together.
+    det_rows = _detector_rows(input_image, rectify=rectify)
     if det_rows is not None:  # learned text detector: photos, tilt, columns, tables
         rows, info = det_rows
         recognized_lines, rows_cells, keep = [], [], []
@@ -342,19 +351,22 @@ def run_ocr(input_image, lang=LANG_AUTO, use_lm=True, keep_lines=False, as_markd
                 _queue_lines([k[0] for k in keep], [k[1] for k in keep])
             except Exception as exc:
                 print("could not keep lines:", exc)
-        if as_markdown:
-            from lao_ocr.markdown_fmt import format_markdown
-            text = format_markdown(rows_cells, page_w=w, line_height=info["line_height"])
-        else:
-            text = "\n".join(recognized_lines)
+        plain_text = "\n".join(recognized_lines)
+        from lao_ocr.markdown_fmt import format_markdown
+        rect_img = info.get("rectified_img")
+        rw = rect_img.shape[1] if rect_img is not None else w
+        md_text = format_markdown(rows_cells, page_w=rw, line_height=info["line_height"]) if rows_cells else plain_text
+        bill_html = check_bill(plain_text).to_html()
+        display_text = md_text if as_markdown else plain_text
         lh = info["line_height"]
-        mode_str = f"เอกสาร ({len(rows)} แถว, {info['boxes']} กล่องข้อความ) | ตัวตรวจจับข้อความ | สูงบรรทัด ~{lh:.0f}px | เอียง {info['skew']:.1f}°"
-        char_count = f"{len(text)} ตัวอักษร ({mode_str})"
+        rect_tag = f" | 📐 {info.get('rectify_summary', '')}" if rectify and info.get("rectify_summary") else ""
+        mode_str = f"เอกสาร ({len(rows)} แถว, {info['boxes']} กล่องข้อความ) | ตัวตรวจจับข้อความ | สูงบรรทัด ~{lh:.0f}px{rect_tag}"
+        char_count = f"{len(plain_text)} ตัวอักษร ({mode_str})"
         if lh and lh < 14:
             char_count = "⚠️ ภาพความละเอียดต่ำ: บรรทัดสูงเพียง ~%.0f px — ถ้าอ่านผิดมาก ให้ใช้ภาพที่ละเอียดกว่า\n" % lh + char_count
-        return text, f"{(time.time() - t0) * 1000:.1f} ms", char_count, res_str
+        return display_text, md_text, bill_html, f"{(time.time() - t0) * 1000:.1f} ms", char_count, res_str, info.get("rectified_img", input_image)
 
-    page = segment_page(input_image)
+    page = segment_page(input_image, rectify=rectify)
     recognized_lines, keep = [], []
     for line in page.lines:
         if line.image.shape[1] * 48 / line.image.shape[0] <= 4096:
@@ -376,9 +388,12 @@ def run_ocr(input_image, lang=LANG_AUTO, use_lm=True, keep_lines=False, as_markd
         recognized_lines = [_recognize(gray, lang, use_lm)]
 
     text = "\n".join(recognized_lines)
+    bill_html = check_bill(text).to_html()
     n = len(page.lines)
     mode_str = "บรรทัดเดี่ยว (Single Line)" if n <= 1 else f"เอกสาร ({n} บรรทัด)"
     mode_str += f" | ตัวอักษรสูง ~{page.char_height:.0f}px"
+    if rectify and page.rectify_summary:
+        mode_str += f" | 📐 {page.rectify_summary}"
 
     latency_ms = (time.time() - t0) * 1000
     char_count = f"{len(text)} ตัวอักษร ({mode_str})"
@@ -386,7 +401,7 @@ def run_ocr(input_image, lang=LANG_AUTO, use_lm=True, keep_lines=False, as_markd
         char_count = "⚠️ " + page.warning + "\n" + char_count
     lat_str = f"{latency_ms:.1f} ms"
 
-    return text, lat_str, char_count, res_str
+    return text, text, bill_html, lat_str, char_count, res_str, (page.rectified_img if page.rectified_img is not None else input_image)
 
 
 # ---------------------------------------------------------------- many pages / PDF
@@ -441,7 +456,7 @@ def _pages_from_files(paths, page_range: str = ""):
             yield name, cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
-def run_batch(files, lang=LANG_AUTO, use_lm=True, keep_lines=False, page_range="", progress=gr.Progress()):
+def run_batch(files, lang=LANG_AUTO, use_lm=True, keep_lines=False, page_range="", rectify=True, progress=gr.Progress()):
     if not files:
         return "กรุณาเลือกไฟล์ภาพหรือ PDF ก่อน (เลือกได้หลายไฟล์พร้อมกัน)", None, "-"
     t0 = time.time()
@@ -452,7 +467,7 @@ def run_batch(files, lang=LANG_AUTO, use_lm=True, keep_lines=False, page_range="
         if isinstance(img, str):
             parts.append(f"===== {label} =====\n[{img}]")
             continue
-        text, _, info, _ = run_ocr(img, lang, use_lm, keep_lines)
+        text, _, _, _, info, _, _ = run_ocr(img, lang, use_lm, keep_lines, rectify=rectify)
         if info.startswith("⚠️"):
             warnings.append(label)
         parts.append(f"===== {label} =====\n{text}")
@@ -576,6 +591,16 @@ def _export_txt_file(text: str):
     return str(p)
 
 
+def _export_md_file(md_text: str):
+    if not (md_text or "").strip():
+        return None
+    out_dir = ROOT / "ocr_results"
+    out_dir.mkdir(exist_ok=True)
+    p = out_dir / f"MaeBounme_OCR_{time.strftime('%Y%m%d_%H%M%S')}.md"
+    p.write_text(md_text, encoding="utf-8")
+    return str(p)
+
+
 def _export_word_file(text: str, font_label: str, font_sz: int,
                       main_b: bool, main_i: bool,
                       num_b: bool, num_i: bool,
@@ -669,22 +694,38 @@ with gr.Blocks(title="Lao + Thai + English OCR Studio") as demo:
                     with gr.Row():
                         lm_input = gr.Checkbox(value=LAO_LM is not None, interactive=LAO_LM is not None,
                                                label="🧠 ตัวช่วยเดาคำ (LM v6)")
+                        rectify_input = gr.Checkbox(value=True, label="📐 ปรับรูป & จัดแถวให้ตรงก่อนอ่าน")
                         md_input = gr.Checkbox(value=False, label="📑 Markdown / ตาราง")
                         keep_input = gr.Checkbox(value=False, label="💾 เก็บไว้สอนโมเดล")
                     with gr.Row():
                         submit_btn = gr.Button("🚀 เริ่มสแกน OCR (กดเมื่อพร้อม)", variant="primary", size="lg")
                         clear_btn = gr.Button("🧹 ล้าง", size="lg")
+                    with gr.Accordion("🖼️ ภาพหลังปรับตรง (Rectified Preview)", open=False):
+                        rectified_preview = gr.Image(label="ภาพหลังแก้เอียง/แก้ภาพบิดก่อนส่งอ่าน", type="numpy", interactive=False)
 
                 with gr.Column(scale=1):
-                    text_output = gr.Textbox(
-                        label="📝 ข้อความที่อ่านได้ (แก้ไขได้โดยตรง)",
-                        elem_classes=["result-box"],
-                        lines=15,
-                        buttons=["copy"],
-                        placeholder="อัปโหลดหรือวางภาพทางซ้าย เลือกภาษา แล้วกดปุ่ม '🚀 เริ่มสแกน OCR'...",
-                    )
+                    with gr.Tabs():
+                        with gr.Tab("📝 ข้อความ (Text)"):
+                            text_output = gr.Textbox(
+                                label="📝 ข้อความที่อ่านได้ (แก้ไขได้โดยตรง — แก้แล้วคำนวณบิลใหม่ให้อัตโนมัติ)",
+                                elem_classes=["result-box"],
+                                lines=14,
+                                buttons=["copy"],
+                                placeholder="อัปโหลดหรือวางภาพทางซ้าย เลือกภาษา แล้วกดปุ่ม '🚀 เริ่มสแกน OCR'...",
+                            )
+                        with gr.Tab("📑 Markdown & ตาราง"):
+                            md_preview = gr.Markdown(value="_กดสแกนเพื่อดูตารางและหัวข้อแบบ Markdown_")
+                            md_raw_output = gr.Textbox(
+                                label="📋 โค้ด Markdown (คัดลอกได้)",
+                                lines=8,
+                                buttons=["copy"],
+                            )
+                        with gr.Tab("🧾 ตรวจบิล & คำนวณราคา"):
+                            bill_check_html = gr.HTML(value=check_bill("").to_html())
+
                     with gr.Row():
                         export_txt_btn = gr.Button("📄 ดาวน์โหลด .txt", size="sm")
+                        export_md_btn = gr.Button("📑 ดาวน์โหลด .md", size="sm")
                         export_word_btn = gr.Button("📘 ดาวน์โหลด Word (.doc)", variant="secondary", size="sm")
                     export_file_out = gr.File(label="📥 ไฟล์พร้อมดาวน์โหลด", visible=True)
                     with gr.Row():
@@ -692,7 +733,7 @@ with gr.Blocks(title="Lao + Thai + English OCR Studio") as demo:
                         count_badge = gr.Textbox(label="📊 สรุป", value="-", interactive=False)
                         res_badge = gr.Textbox(label="📐 ขนาดภาพ", value="-", interactive=False)
 
-                    with gr.Accordion("🎨 ตรวจทานสี & เลือกฟอนต์มาตรฐาน (แยกสีตัวเลข / อังกฤษ • หนา / เอียง)", open=True):
+                    with gr.Accordion("🎨 ตรวจทานสี & เลือกฟอนต์มาตรฐาน (แยกสีตัวเลข / อังกฤษ • หนา / เอียง)", open=False):
                         with gr.Row():
                             font_picker = gr.Dropdown(
                                 choices=list(_WEB_FONTS.keys()),
@@ -714,8 +755,8 @@ with gr.Blocks(title="Lao + Thai + English OCR Studio") as demo:
                     gr.Examples(
                         examples=[[img] for img in sample_images],
                         inputs=[image_input],
-                        outputs=[text_output, speed_badge, count_badge, res_badge],
-                        fn=lambda img: run_ocr(img, LANG_AUTO, True),
+                        outputs=[text_output, md_raw_output, bill_check_html, speed_badge, count_badge, res_badge, rectified_preview],
+                        fn=lambda img: run_ocr(img, LANG_AUTO, True, False, False, True),
                         cache_examples=False,
                         examples_per_page=8,
                     )
@@ -735,7 +776,7 @@ with gr.Blocks(title="Lao + Thai + English OCR Studio") as demo:
                     batch_text = gr.Textbox(label="ข้อความทุกหน้า", lines=16, buttons=["copy"], elem_classes=["result-box"])
                     batch_info = gr.Textbox(label="สรุป", value="-", interactive=False)
                     batch_download = gr.File(label="ดาวน์โหลดผลเป็นไฟล์ .txt")
-            batch_btn.click(fn=run_batch, inputs=[batch_files, lang_input, lm_input, keep_input, batch_page_range],
+            batch_btn.click(fn=run_batch, inputs=[batch_files, lang_input, lm_input, keep_input, batch_page_range, rectify_input],
                             outputs=[batch_text, batch_download, batch_info])
 
         with gr.Tab("✍️ สอนโมเดล & กระดานลายมือ"):
@@ -765,27 +806,30 @@ with gr.Blocks(title="Lao + Thai + English OCR Studio") as demo:
                     f'<iframe src="/pad/" style="width:100%;height:960px;border:1px solid #d7dce5;border-radius:10px"></iframe>'
                 )
 
-    # Manual Scan ONLY when user clicks '🚀 เริ่มสแกน OCR' (matching Chrome Extension UX!)
+    # Manual Scan ONLY when user clicks '🚀 เริ่มสแกน OCR' — ONE pass fills Text + Markdown Table + Bill Calc!
     submit_btn.click(
         fn=run_ocr,
-        inputs=[image_input, lang_input, lm_input, keep_input, md_input],
-        outputs=[text_output, speed_badge, count_badge, res_badge],
+        inputs=[image_input, lang_input, lm_input, keep_input, md_input, rectify_input],
+        outputs=[text_output, md_raw_output, bill_check_html, speed_badge, count_badge, res_badge, rectified_preview],
     )
+    md_raw_output.change(fn=lambda m: m or "_ไม่มีข้อมูล Markdown_", inputs=[md_raw_output], outputs=[md_preview])
     export_txt_btn.click(fn=_export_txt_file, inputs=[text_output], outputs=[export_file_out])
+    export_md_btn.click(fn=_export_md_file, inputs=[md_raw_output], outputs=[export_file_out])
     export_word_btn.click(
         fn=_export_word_file,
         inputs=[text_output, font_picker, font_size_slider, main_bold, main_italic, num_bold, num_italic, en_bold, en_italic],
         outputs=[export_file_out],
     )
     clear_btn.click(
-        fn=lambda: (None, "", "-", "-", "-", None),
+        fn=lambda: (None, "", "", "_กดสแกนเพื่อดูตารางและหัวข้อแบบ Markdown_", check_bill("").to_html(), "-", "-", "-", None, None),
         inputs=None,
-        outputs=[image_input, text_output, speed_badge, count_badge, res_badge, export_file_out],
+        outputs=[image_input, text_output, md_raw_output, md_preview, bill_check_html, speed_badge, count_badge, res_badge, export_file_out, rectified_preview],
     )
 
     _proof_inputs = [text_output, font_picker, font_size_slider, main_bold, main_italic, num_bold, num_italic, en_bold, en_italic]
     for _ctrl in _proof_inputs:
         _ctrl.change(fn=render_proofread_html, inputs=_proof_inputs, outputs=[proofread_html])
+    text_output.change(fn=lambda txt: check_bill(txt or "").to_html(), inputs=[text_output], outputs=[bill_check_html])
 
 if __name__ == "__main__":
     port = 7860

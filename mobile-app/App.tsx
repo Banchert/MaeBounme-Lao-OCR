@@ -14,6 +14,7 @@ export default function App() {
     lineCount: number;
     images: string[];
     rotations: number[];
+    lowConfWords: Record<string, number>;
   } | null>(null);
 
   useEffect(() => {
@@ -34,14 +35,15 @@ export default function App() {
           lineCount={result.lineCount}
           images={result.images}
           rotations={result.rotations}
+          lowConfWords={result.lowConfWords}
           onBack={() => setResult(null)}
         />
       ) : (
         <HomeScreen
           uiLang={uiLang}
           setUiLang={setUiLang}
-          onResult={(text, ms, avgConf, lineCount, images, rotations) =>
-            setResult({ text, ms, avgConf, lineCount, images, rotations })
+          onResult={(text, ms, avgConf, lineCount, images, rotations, lowConfWords) =>
+            setResult({ text, ms, avgConf, lineCount, images, rotations, lowConfWords })
           }
         />
       )}
