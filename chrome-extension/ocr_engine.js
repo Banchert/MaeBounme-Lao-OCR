@@ -186,6 +186,9 @@ class OfflineLaoOCR {
         const y2 = Math.min(H, Math.ceil((maxY + padBottom) * sy));
         if (x2 - x1 >= 6 && y2 - y1 >= 6) {
           const bObj = [x1, y1, x2, y2];
+          bObj._coreY1 = minY * sy;
+          bObj._coreY2 = (maxY + 1) * sy;
+          bObj._coreH = Math.max(4, bh * sy);
           // Attach smoothed column centerline profile for wavy/tilted line dewarping
           if (bw >= 10) {
             const cMin = new Float32Array(bw).fill(1e9);
@@ -231,6 +234,10 @@ class OfflineLaoOCR {
 
     if (boxes.length === 0) return [[[0, 0, W, H]]];
 
+    // Smart Ink-Aware + Neighbor-Clamped Box Refinement:
+    // prevents clipping Lao tall stems / top marks / bottom vowels (ຸ ູ ຼ) while NEVER swallowing adjacent lines
+    this.refineBoxesInkAware(canvas, boxes);
+
     boxes.sort((a, b) => (a[1] + a[3]) / 2 - (b[1] + b[3]) / 2);
     const rows = [];
     for (const b of boxes) {
@@ -249,6 +256,121 @@ class OfflineLaoOCR {
     }
     for (const row of rows) row.sort((a, b) => a[0] - b[0]);
     return rows;
+  }
+
+  /**
+   * Smart Ink-Aware + Neighbor-Clamped Box Refinement for Lao & Thai:
+   *  1) Clamps each box's vertical expansion at the midpoint to neighboring lines above/below
+   *  2) Scans actual ink pixels inside the safe band to wrap tall stems (ປ ຝ ຟ ໂ ໃ ໄ),
+   *     stacked top marks (ິ້ ີ່ ັ້), and bottom vowels (ຸ ູ ຼ) without bloating plain lines.
+   */
+  refineBoxesInkAware(canvas, boxes) {
+    const W = canvas.width;
+    const H = canvas.height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const fullData = ctx.getImageData(0, 0, W, H).data;
+
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i];
+      const coreY1 = b._coreY1 !== undefined ? b._coreY1 : b[1];
+      const coreY2 = b._coreY2 !== undefined ? b._coreY2 : b[3];
+      const coreH = Math.max(6, b._coreH || (coreY2 - coreY1));
+      const x1 = Math.max(0, Math.floor(b[0]));
+      const x2 = Math.min(W, Math.ceil(b[2]));
+      if (x2 - x1 < 6) continue;
+
+      // 1) Clamp ceiling/floor at midpoint to nearest horizontally-overlapping neighbor above/below
+      let ceilY = Math.max(0, coreY1 - coreH * 0.90);
+      let floorY = Math.min(H, coreY2 + coreH * 0.80);
+      for (let j = 0; j < boxes.length; j++) {
+        if (j === i) continue;
+        const ob = boxes[j];
+        const ovX = Math.min(b[2], ob[2]) - Math.max(b[0], ob[0]);
+        if (ovX < 0.20 * Math.min(b[2] - b[0], ob[2] - ob[0])) continue;
+        const oy1 = ob._coreY1 !== undefined ? ob._coreY1 : ob[1];
+        const oy2 = ob._coreY2 !== undefined ? ob._coreY2 : ob[3];
+        if (oy2 <= coreY1 + 0.15 * coreH) {
+          const mid = 0.5 * (oy2 + coreY1);
+          if (mid > ceilY) ceilY = mid;
+        } else if (oy1 >= coreY2 - 0.15 * coreH) {
+          const mid = 0.5 * (coreY2 + oy1);
+          if (mid < floorY) floorY = mid;
+        }
+      }
+
+      const ry1 = Math.max(0, Math.floor(ceilY));
+      const ry2 = Math.min(H, Math.ceil(floorY));
+      const rh = ry2 - ry1;
+      const rw = x2 - x1;
+      if (rh < 6) continue;
+
+      // 2) Estimate local background & row ink occupancy inside [ry1..ry2, x1..x2]
+      let sumLum = 0, minLum = 255, maxLum = 0, nLum = 0;
+      const strideX = Math.max(1, Math.floor(rw / 160));
+      for (let y = ry1; y < ry2; y += Math.max(1, Math.floor(rh / 40))) {
+        const rowOff = y * W;
+        for (let x = x1; x < x2; x += strideX) {
+          const p = (rowOff + x) * 4;
+          const lum = 0.299 * fullData[p] + 0.587 * fullData[p + 1] + 0.114 * fullData[p + 2];
+          sumLum += lum;
+          if (lum < minLum) minLum = lum;
+          if (lum > maxLum) maxLum = lum;
+          nLum++;
+        }
+      }
+      const meanLum = nLum > 0 ? sumLum / nLum : 240;
+      const isLightBg = meanLum >= 127;
+      const bg = isLightBg ? Math.min(255, maxLum - 4) : Math.max(0, minLum + 4);
+      const thr = Math.max(24, 0.20 * Math.abs(bg - (isLightBg ? minLum : maxLum)));
+      const minCols = Math.max(2, Math.floor((rw / strideX) * 0.008));
+
+      const rowInk = new Uint8Array(rh);
+      for (let r = 0; r < rh; r++) {
+        const rowOff = (ry1 + r) * W;
+        let cnt = 0;
+        for (let x = x1; x < x2; x += strideX) {
+          const p = (rowOff + x) * 4;
+          const lum = 0.299 * fullData[p] + 0.587 * fullData[p + 1] + 0.114 * fullData[p + 2];
+          if (Math.abs(lum - bg) > thr) cnt++;
+        }
+        if (cnt >= minCols) rowInk[r] = 1;
+      }
+
+      // Walk upward from coreY1 and downward from coreY2 allowing small mark gaps (<= 0.36 * coreH)
+      const coreTopRel = Math.max(0, Math.min(rh - 1, Math.floor(coreY1 - ry1)));
+      const coreBotRel = Math.max(0, Math.min(rh - 1, Math.ceil(coreY2 - ry1)));
+      const maxGap = Math.max(3, Math.round(0.36 * coreH));
+
+      let snapTop = coreTopRel;
+      let gap = 0;
+      for (let r = coreTopRel; r >= 0; r--) {
+        if (rowInk[r]) { snapTop = r; gap = 0; }
+        else if (++gap > maxGap) break;
+      }
+      let snapBot = coreBotRel;
+      gap = 0;
+      for (let r = coreBotRel; r < rh; r++) {
+        if (rowInk[r]) { snapBot = r; gap = 0; }
+        else if (++gap > maxGap) break;
+      }
+
+      const breath = Math.max(2.5, 0.12 * coreH);
+      const newY1 = Math.max(ceilY, ry1 + snapTop - breath);
+      const newY2 = Math.min(floorY, ry1 + snapBot + 1 + breath);
+      if (newY2 - newY1 >= 6) {
+        const dTop = newY1 - b[1];
+        const dBot = newY2 - b[3];
+        b[1] = Math.floor(newY1);
+        b[3] = Math.ceil(newY2);
+        if (b._colTop && b._colBot) {
+          for (let c = 0; c < b._colTop.length; c++) {
+            b._colTop[c] = Math.max(ceilY, Math.min(H - 2, b._colTop[c] + dTop));
+            b._colBot[c] = Math.min(floorY, Math.max(b._colTop[c] + 4, b._colBot[c] + dBot));
+          }
+          b._medH = Math.max(8, newY2 - newY1);
+        }
+      }
+    }
   }
 
   async recognizeCrop(canvas, box, modelMode = "lao") {
@@ -364,6 +486,7 @@ class OfflineLaoOCR {
       "ຂ": ["ຊ"], "ຊ": ["ຂ"], "ບ": ["ປ"], "ປ": ["ບ"], "ຜ": ["ຝ"], "ຝ": ["ຜ"],
       "ພ": ["ຟ"], "ຟ": ["ພ"], "ຄ": ["ດ"], "ດ": ["ຄ", "ຕ"], "ຕ": ["ດ"],
       "ທ": ["ຫ"], "ຫ": ["ທ"], "ນ": ["ມ"], "ມ": ["ນ"],
+      "ງ": ["າ"], "າ": ["ງ"], "ໂ": ["ໃ", "ໄ"], "ໃ": ["ໄ", "ໂ"], "ໄ": ["ໃ", "ໂ"],
       "່": ["້"], "້": ["່"], "ຸ": ["ູ"], "ູ": ["ຸ"]
     };
     const MARKS = ["ຸ", "ູ", "່", "້", "ັ", "ົ", "ິ", "ີ", "ຶ", "ື"];
@@ -377,7 +500,7 @@ class OfflineLaoOCR {
         const cand = tok.slice(0, i) + alt + tok.slice(i + 1);
         const rank = lex.get(cand);
         if (rank !== undefined && rank < 22000) {
-          const score = rank + (tok[i] === "ຂ" || tok[i] === "ຊ" ? 0 : 1200);
+          const score = rank + (tok[i] === "ຂ" || tok[i] === "ຊ" || tok[i] === "ງ" || tok[i] === "າ" ? 0 : 1200);
           if (score < bestScore) { bestScore = score; bestWord = cand; }
         }
       }

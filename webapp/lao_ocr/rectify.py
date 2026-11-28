@@ -403,12 +403,12 @@ def straighten_line_crop(gray: np.ndarray) -> tuple[np.ndarray, bool]:
     straight = cv2.remap(padded, map_x, map_y, interpolation=cv2.INTER_CUBIC,
                          borderMode=cv2.BORDER_CONSTANT, borderValue=border)
 
-    # Trim excess empty padding while keeping safe margin for Lao tone marks & sub-vowels
+    # Trim excess empty padding while keeping generous margin for Lao tall stems, tone marks & sub-vowels
     g_s = 255 - straight if border < 127 else straight
     ink_rows = np.where((g_s <= t).any(axis=1))[0]
     if len(ink_rows) >= 4:
-        margin_t = max(4, int(round(h * 0.12)))
-        margin_b = max(4, int(round(h * 0.14)))
+        margin_t = max(6, int(round(h * 0.20)))
+        margin_b = max(6, int(round(h * 0.20)))
         y0 = max(0, int(ink_rows[0]) - margin_t)
         y1 = min(H_pad, int(ink_rows[-1]) + 1 + margin_b)
         if (y1 - y0) >= max(14, int(h * 0.7)):

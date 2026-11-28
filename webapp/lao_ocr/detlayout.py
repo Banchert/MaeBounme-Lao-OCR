@@ -45,18 +45,109 @@ def _engine():
     return _ENGINE
 
 
-def _pad_quad(b: np.ndarray, v: float = 0.15, h: float = 0.25) -> np.ndarray:
-    """grow a detected quad: v x line height above and below, h x line height at both ends
-    (the recognizer was trained on lines with a little margin)"""
-    b = b.astype(np.float32).copy()
-    height = max(1.0, float(np.linalg.norm(b[0] - b[3])))
+def _expand_quad_ink_aware(
+    gray: np.ndarray,
+    boxes: list[np.ndarray],
+    idx: int,
+    max_top: float = 0.45,
+    max_bot: float = 0.42,
+    h_pad: float = 0.34,
+) -> np.ndarray:
+    """Smart Ink-Aware Box Expansion for Lao & Thai:
+      1. Clamps upward/downward expansion at the midpoint to neighboring lines above/below
+         so dense lines NEVER swallow adjacent tone marks or sub-vowels.
+      2. Inspects actual ink pixels inside the safe band above/below the DB box:
+         - Captures floating tone marks (່ ້ ໊ ໋), top vowels (ິ ີ ຶ ື), tall stems (ປ ຝ ຟ ໂ ໃ ໄ),
+           and bottom vowels (ຸ ູ ຼ) completely.
+         - Avoids bloating plain lines with excess whitespace so letters stay tall at H=48px!
+      3. Adds breathing margin (~10% of height) matching the HarfBuzz training distribution.
+    """
+    H, W = gray.shape[:2]
+    b = boxes[idx].astype(np.float32).copy()
+    height = max(4.0, float(np.linalg.norm(b[0] - b[3])))
     up = (b[0] - b[3]) / height
-    width = max(1.0, float(np.linalg.norm(b[1] - b[0])))
+    width = max(4.0, float(np.linalg.norm(b[1] - b[0])))
     right = (b[1] - b[0]) / width
-    b[0] += up * v * height - right * h * height
-    b[1] += up * v * height + right * h * height
-    b[2] += -up * v * height + right * h * height
-    b[3] += -up * v * height - right * h * height
+
+    x1_cur, x2_cur = float(b[:, 0].min()), float(b[:, 0].max())
+    y1_cur, y2_cur = float(b[:, 1].min()), float(b[:, 1].max())
+
+    # 1) Find nearest horizontally-overlapping neighbor above and below to clamp expansion
+    ceil_y = max(0.0, y1_cur - max_top * height)
+    floor_y = min(float(H - 1), y2_cur + max_bot * height)
+    for j, ob in enumerate(boxes):
+        if j == idx:
+            continue
+        ox1, ox2 = float(ob[:, 0].min()), float(ob[:, 0].max())
+        # Must overlap horizontally by at least 20% of min width
+        ov_x = min(x2_cur, ox2) - max(x1_cur, ox1)
+        if ov_x < 0.20 * min(x2_cur - x1_cur, ox2 - ox1):
+            continue
+        oy1, oy2 = float(ob[:, 1].min()), float(ob[:, 1].max())
+        if oy2 <= y1_cur + 0.15 * height:
+            mid = 0.5 * (oy2 + y1_cur)
+            if mid > ceil_y:
+                ceil_y = mid
+        elif oy1 >= y2_cur - 0.15 * height:
+            mid = 0.5 * (y2_cur + oy1)
+            if mid < floor_y:
+                floor_y = mid
+
+    # 2) Inspect actual ink pixels in the clamped region to snap tightly to top marks & bottom vowels
+    rx1 = max(0, int(np.floor(x1_cur - h_pad * height)))
+    rx2 = min(W, int(np.ceil(x2_cur + h_pad * height)))
+    ry1 = max(0, int(np.floor(ceil_y)))
+    ry2 = min(H, int(np.ceil(floor_y)))
+
+    v_top_px = min(0.24 * height, max(2.0, y1_cur - ceil_y))
+    v_bot_px = min(0.22 * height, max(2.0, floor_y - y2_cur))
+
+    if ry2 - ry1 >= 6 and rx2 - rx1 >= 6:
+        patch = gray[ry1:ry2, rx1:rx2]
+        bg = float(np.percentile(patch, 85)) if patch.mean() >= 127 else float(np.percentile(patch, 15))
+        dark = np.abs(patch.astype(np.float32) - bg) > max(26.0, 0.18 * abs(bg - float(patch.min() if patch.mean() >= 127 else patch.max())))
+        row_has_ink = dark.sum(axis=1) >= max(2, int((rx2 - rx1) * 0.008))
+        ink_ys = np.flatnonzero(row_has_ink)
+        if len(ink_ys) >= 3:
+            # Find ink extent connected within gap <= 0.30*height of the core box (ignores stray neighbor specks)
+            core_top_rel = max(0, int(y1_cur - ry1))
+            core_bot_rel = min(ry2 - ry1 - 1, int(y2_cur - ry1))
+            max_gap = max(3, int(round(0.32 * height)))
+
+            # Walk upward from core_top_rel
+            snap_top = core_top_rel
+            gap = 0
+            for r in range(core_top_rel, -1, -1):
+                if row_has_ink[r]:
+                    snap_top = r
+                    gap = 0
+                else:
+                    gap += 1
+                    if gap > max_gap:
+                        break
+
+            # Walk downward from core_bot_rel
+            snap_bot = core_bot_rel
+            gap = 0
+            for r in range(core_bot_rel, ry2 - ry1):
+                if row_has_ink[r]:
+                    snap_bot = r
+                    gap = 0
+                else:
+                    gap += 1
+                    if gap > max_gap:
+                        break
+
+            breath = max(2.0, 0.10 * height)
+            target_y1 = max(ceil_y, float(ry1 + snap_top) - breath)
+            target_y2 = min(floor_y, float(ry1 + snap_bot) + breath)
+            v_top_px = max(2.0, y1_cur - target_y1)
+            v_bot_px = max(2.0, target_y2 - y2_cur)
+
+    b[0] += up * v_top_px - right * h_pad * height
+    b[1] += up * v_top_px + right * h_pad * height
+    b[2] += -up * v_bot_px + right * h_pad * height
+    b[3] += -up * v_bot_px - right * h_pad * height
     return b
 
 
@@ -109,7 +200,7 @@ def read_rows_with_boxes(img: np.ndarray, rgb: bool = True, rectify: bool = True
     for row in reading_order(boxes):
         items = []
         for k in row:
-            q = _pad_quad(boxes[k])
+            q = _expand_quad_ink_aware(gray, boxes, k)
             q[:, 0] = q[:, 0].clip(0, W - 1)
             q[:, 1] = q[:, 1].clip(0, H - 1)
             c = crop_line(gray, q)

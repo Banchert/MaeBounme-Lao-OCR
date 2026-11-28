@@ -31,6 +31,11 @@ const LAO_CONFUSABLES: Record<string, string[]> = {
   "ຫ": ["ທ"],
   "ນ": ["ມ"],
   "ມ": ["ນ"],
+  "ງ": ["າ"],
+  "າ": ["ງ"],
+  "ໂ": ["ໃ", "ໄ"],
+  "ໃ": ["ໄ", "ໂ"],
+  "ໄ": ["ໃ", "ໂ"],
   "່": ["້"],
   "້": ["່"],
   "ຸ": ["ູ"],
@@ -580,8 +585,9 @@ class MobileLaoOcrEngine {
           }
           heights.sort((a, b) => a - b);
           const medH = heights.length ? heights[Math.floor(heights.length * 0.65)] : bh;
-          const padTop = Math.max(6, medH * 0.40);
-          const padBot = Math.max(5, medH * 0.32);
+          // Generous vertical padding so Lao tall stems (ປ ຝ ຟ ໂ ໃ ໄ), stacked top marks, and bottom ຸ ູ ຼ are NEVER clipped
+          const padTop = Math.max(8, medH * 0.56);
+          const padBot = Math.max(7, medH * 0.48);
 
           // Moving-average smooth centerline so curve follows wavy/tilted text smoothly
           const win = Math.max(2, Math.min(12, Math.floor(spanW / 8)));
@@ -601,9 +607,9 @@ class MobileLaoOcrEngine {
           }
         }
 
-        const padX = Math.max(4, bh * 0.22);
-        const padTopBox = Math.max(6, bh * 0.40);
-        const padBotBox = Math.max(5, bh * 0.32);
+        const padX = Math.max(6, bh * 0.38);
+        const padTopBox = Math.max(8, bh * 0.56);
+        const padBotBox = Math.max(7, bh * 0.48);
         lines.push({
           box: [
             Math.max(0, Math.floor(minX * sx - padX)),
