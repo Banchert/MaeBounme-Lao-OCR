@@ -229,89 +229,15 @@ class OfflineLaoOCR {
     if (paper < 155) return srcCanvas; // dark-mode screen: leave untouched
 
     let changed = false;
-    // Pass 1: remove red & blue rubber stamps without touching dark black ink
+    // Remove ONLY high-saturation red & blue rubber stamps (never touch grayscale/faded black text or Lao tone marks!)
     for (let i = 0; i < d.length; i += 4) {
       const r = d[i], g = d[i + 1], b = d[i + 2];
       const y = 0.299 * r + 0.587 * g + 0.114 * b;
-      const isRed = (r - Math.max(g, b)) > 36 && y > 75;
-      const isBlue = (b - Math.max(r, g)) > 44 && y > 75;
+      const isRed = (r - Math.max(g, b)) > 40 && y > 80;
+      const isBlue = (b - Math.max(r, g)) > 48 && y > 80;
       if (isRed || isBlue) {
         d[i] = d[i + 1] = d[i + 2] = paper;
         changed = true;
-      }
-    }
-
-    // Pass 2: suppress LARGE faint-gray diagonal watermarks while NEVER touching dark text or tiny 2-4px tone marks (່ ້)
-    let darkCount = 0;
-    const darkHist = new Uint32Array(256);
-    const darkLim = Math.max(40, paper - 50);
-    for (let i = 0; i < d.length; i += 4) {
-      const y = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0;
-      if (y < darkLim) { darkHist[y]++; darkCount++; }
-    }
-    if (darkCount > 200) {
-      let inkMed = 40, dAcc = 0;
-      for (let i = 0; i < darkLim; i++) {
-        dAcc += darkHist[i];
-        if (dAcc >= darkCount * 0.35) { inkMed = i; break; }
-      }
-      const wmLo = Math.min(paper - 18, Math.max(168, inkMed + 95));
-      const wmHi = paper - 6;
-      if (wmHi > wmLo + 8) {
-        // 2x-downsampled connected-component filter so it runs in <10ms in browser WASM/JS
-        const sw = Math.ceil(W / 2);
-        const sh = Math.ceil(H / 2);
-        const mask = new Uint8Array(sw * sh);
-        for (let sy = 0; sy < sh; sy++) {
-          const py = Math.min(H - 1, sy * 2);
-          const rowOff = py * W;
-          const mOff = sy * sw;
-          for (let sx = 0; sx < sw; sx++) {
-            const p = (rowOff + Math.min(W - 1, sx * 2)) * 4;
-            const y = (0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]) | 0;
-            if (y >= wmLo && y <= wmHi) mask[mOff + sx] = 1;
-          }
-        }
-        const vis = new Uint8Array(sw * sh);
-        const erase = new Uint8Array(sw * sh);
-        const q = new Int32Array(sw * sh);
-        const pts = new Int32Array(sw * sh);
-        for (let idx = 0; idx < sw * sh; idx++) {
-          if (!mask[idx] || vis[idx]) continue;
-          let head = 0, tail = 0, cnt = 0;
-          q[tail++] = idx;
-          vis[idx] = 1;
-          let minX = sw, maxX = 0, minY = sh, maxY = 0;
-          while (head < tail) {
-            const cur = q[head++];
-            pts[cnt++] = cur;
-            const cx = cur % sw, cy = (cur - cx) / sw;
-            if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
-            if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
-            if (cx > 0 && mask[cur - 1] && !vis[cur - 1]) { vis[cur - 1] = 1; q[tail++] = cur - 1; }
-            if (cx + 1 < sw && mask[cur + 1] && !vis[cur + 1]) { vis[cur + 1] = 1; q[tail++] = cur + 1; }
-            if (cy > 0 && mask[cur - sw] && !vis[cur - sw]) { vis[cur - sw] = 1; q[tail++] = cur - sw; }
-            if (cy + 1 < sh && mask[cur + sw] && !vis[cur + sw]) { vis[cur + sw] = 1; q[tail++] = cur + sw; }
-          }
-          // Only erase large faint-gray blobs (>= 220 full-res px & >= 24px span)
-          if (cnt >= 55 && ((maxX - minX + 1) >= 12 || (maxY - minY + 1) >= 12)) {
-            for (let k = 0; k < cnt; k++) erase[pts[k]] = 1;
-          }
-        }
-        for (let py = 0; py < H; py++) {
-          const mOff = (py >> 1) * sw;
-          const rowOff = py * W;
-          for (let px = 0; px < W; px++) {
-            if (erase[mOff + (px >> 1)]) {
-              const p = (rowOff + px) * 4;
-              const y = (0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]) | 0;
-              if (y >= wmLo - 8) {
-                d[p] = d[p + 1] = d[p + 2] = paper;
-                changed = true;
-              }
-            }
-          }
-        }
       }
     }
 

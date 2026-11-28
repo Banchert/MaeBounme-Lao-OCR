@@ -18,9 +18,13 @@ import numpy as np
 def remove_stamps_and_watermarks(
     rgb: np.ndarray,
     remove_red_blue_stamps: bool = True,
-    remove_faint_watermark: bool = True,
+    remove_faint_watermark: bool = False,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    """Clean colored stamps & faint gray watermarks from an RGB page.
+    """Clean colored stamps (and optionally isolated faint gray watermarks) from an RGB page.
+
+    NOTE: remove_faint_watermark defaults to False so faded/scanned gray text and thin Lao
+    tone marks (່ ້) are NEVER accidentally bleached. Even when True, any pixel within 5px
+    of dark text ink is strictly protected.
 
     Returns (cleaned_rgb, watermark_gray_mask_or_None).
     """
@@ -43,36 +47,34 @@ def remove_stamps_and_watermarks(
 
     if remove_red_blue_stamps:
         # Red stamp pixels: R clearly higher than G & B, and not dark black ink
-        red_mask = ((r - np.maximum(g, b)) > 36) & (gray > 75)
+        red_mask = ((r - np.maximum(g, b)) > 40) & (gray > 80)
         # Blue stamp pixels: B clearly higher than R & G, and not dark black ink
-        blue_mask = ((b - np.maximum(r, g)) > 44) & (gray > 75)
+        blue_mask = ((b - np.maximum(r, g)) > 48) & (gray > 80)
         stamp_mask = red_mask | blue_mask
         if stamp_mask.any():
             out[stamp_mask] = (paper, paper, paper)
             wm_mask[stamp_mask] = 255
 
     if remove_faint_watermark:
-        # Faint gray watermarks: large low-contrast gray blobs far lighter than real text ink
+        # Protect all dark text + a 5px safety halo around every dark text pixel
         g2 = cv2.cvtColor(out, cv2.COLOR_RGB2GRAY)
-        dark_ink = g2[g2 < paper - 50]
-        if dark_ink.size > 200:
-            ink_med = float(np.percentile(dark_ink, 35))
-            # Faint watermark band: clearly lighter than dark text ink, darker than pure paper
-            # Safety margin ensures thin anti-aliased Lao tone marks (core < ink_med + 55) are untouched!
-            wm_lo = int(min(paper - 18, max(168, ink_med + 95)))
-            wm_hi = int(paper - 6)
-            if wm_hi > wm_lo + 8:
-                cand = ((g2 >= wm_lo) & (g2 <= wm_hi)).astype(np.uint8) * 255
-                # Only remove LARGE connected watermark strokes (area >= 220 px), never tiny tone marks!
-                n, labels, stats, _ = cv2.connectedComponentsWithStats(cand, connectivity=8)
-                for i in range(1, n):
-                    area = stats[i, cv2.CC_STAT_AREA]
-                    bw_i = stats[i, cv2.CC_STAT_WIDTH]
-                    bh_i = stats[i, cv2.CC_STAT_HEIGHT]
-                    if area >= 220 and (bw_i >= 24 or bh_i >= 24):
-                        m = labels == i
-                        out[m] = (paper, paper, paper)
-                        wm_mask[m] = 255
+        dark_text = (g2 < min(155, paper - 65)).astype(np.uint8) * 255
+        text_halo = cv2.dilate(dark_text, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)))
+        wm_lo = int(min(paper - 20, 185))
+        wm_hi = int(paper - 8)
+        if wm_hi > wm_lo + 8:
+            cand = ((g2 >= wm_lo) & (g2 <= wm_hi) & (text_halo == 0)).astype(np.uint8) * 255
+            # Require thick strokes (morphological opening with 3x3) and large area (>= 300px)
+            cand = cv2.morphologyEx(cand, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+            n, labels, stats, _ = cv2.connectedComponentsWithStats(cand, connectivity=8)
+            for i in range(1, n):
+                area = stats[i, cv2.CC_STAT_AREA]
+                bw_i = stats[i, cv2.CC_STAT_WIDTH]
+                bh_i = stats[i, cv2.CC_STAT_HEIGHT]
+                if area >= 300 and (bw_i >= 28 or bh_i >= 28):
+                    m = labels == i
+                    out[m] = (paper, paper, paper)
+                    wm_mask[m] = 255
 
     has_wm = (wm_mask > 0).sum() > 400
     return out, (255 - wm_mask if has_wm else None)
