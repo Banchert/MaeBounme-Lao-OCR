@@ -22,6 +22,29 @@ except Exception as _ot_exc:
     fuse_thai_reading = None
     print("Thai Dual-Fusion not loaded:", _ot_exc)
 
+# Dedicated Thai Recognizer (Thai R3 All-1256-Fonts 99.5% -> R2 fallback)
+THAI_MODEL_CANDIDATES = [
+    ROOT / "runs" / "gpu-thai-r3-allfonts-skew-receipt" / "onnx",
+    ROOT / "runs" / "gpu-thai-print-r2-realworld-tipitaka" / "onnx",
+    ROOT / "runs" / "gpu-thai-print-01" / "onnx",
+]
+THAI_SESSION = None
+THAI_CODEC = None
+THAI_MODEL_NAME = None
+for _td in THAI_MODEL_CANDIDATES:
+    if (_td / "rec.onnx").is_file() and (_td / "rec_dict.txt").is_file():
+        try:
+            _topt = ort.SessionOptions()
+            _topt.intra_op_num_threads = 4
+            _topt.log_severity_level = 3
+            THAI_SESSION = ort.InferenceSession(str(_td / "rec.onnx"), _topt, providers=["CPUExecutionProvider"])
+            THAI_CODEC = Codec((_td / "rec_dict.txt").read_text(encoding="utf-8").splitlines())
+            THAI_MODEL_NAME = _td.parent.name
+            print(f"Dedicated Thai Model: {_td} ({THAI_MODEL_NAME})")
+            break
+        except Exception as _texc:
+            print("Dedicated Thai model failed:", _texc)
+
 ROOT = Path(__file__).resolve().parent
 # Prefer newly trained Tri-lingual model (Lao + Thai + English)
 # First existing model wins: newest training first.
@@ -237,6 +260,30 @@ def _probs(logits: np.ndarray) -> np.ndarray:
 
 
 def _recognize(gray_crop: np.ndarray, lang: str = LANG_AUTO, use_lm: bool = True) -> str:
+    # Use dedicated Thai R3 model when user selects Thai mode (ไทย + English / ไทยอย่างเดียว)
+    if THAI_SESSION is not None and THAI_CODEC is not None and lang in ("ไทย + English", "ไทยอย่างเดียว (Thai only)"):
+        t_logits = THAI_SESSION.run(None, {THAI_SESSION.get_inputs()[0].name: to_tensor(gray_crop)})[0][0]
+        t_probs = _probs(t_logits)
+        if lang == "ไทยอย่างเดียว (Thai only)":
+            t_probs = t_probs.copy()
+            _t_block = np.array([("\u0e80" <= c <= "\u0eff") or (c.isascii() and c.isalpha()) for c in THAI_CODEC.chars])
+            t_probs[:, _t_block] = 0.0
+        else:
+            t_probs = t_probs.copy()
+            _t_block = np.array([("\u0e80" <= c <= "\u0eff") for c in THAI_CODEC.chars])
+            t_probs[:, _t_block] = 0.0
+        idxs = t_probs.argmax(-1).tolist()
+        text = THAI_CODEC.decode(idxs).strip()
+        if OT22_THAI is not None and fuse_thai_reading is not None and text:
+            confs, prev = [], None
+            for ti, idx in enumerate(idxs):
+                if idx and idx != prev:
+                    confs.append(float(t_probs[ti, idx]))
+                prev = idx
+            mean_conf = float(np.mean(confs)) if confs else 0.0
+            text, _, _ = fuse_thai_reading(text, mean_conf, gray_crop, OT22_THAI, fallback_below=0.92)
+        return text.strip()
+
     logits = _infer(to_tensor(gray_crop))[0]
     block = LANG_MODES.get(lang)
     if block is not None:
