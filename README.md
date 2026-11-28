@@ -34,8 +34,8 @@
 ## 📦 Downloads (Releases)
 
 Check the **[Releases](https://github.com/Banchert/MaeBounme-Lao-OCR/releases)** page to download ready-to-use packages:
-- **Android App (`.apk`)**: `MaeBounme-Lao-OCR-v1.7.0.apk` (Round 18 All-343-Fonts + Confidence Underlines + Keyboard Lock)
-- **Chrome Side Panel Extension (`.zip`)**: `MaeBounme-Lao-OCR-v1.2.0.zip` (Round 18 All-343-Fonts)
+- **Android App (`.apk`)**: `MaeBounme-Lao-OCR-v1.8.0.apk` (Lao R18 All-343-Fonts + Thai R3 All-1,256-Fonts 99.5% + OpenThai 2.2 Detector + Confidence Underlines + Keyboard Lock)
+- **Chrome Side Panel Extension (`.zip`)**: `MaeBounme-Lao-OCR-v1.3.0.zip` (Lao R18 + Thai R3 + OpenThai 2.2 Detector)
 
 ---
 

@@ -16,7 +16,8 @@ import cv2
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-DET_DIR = ROOT / 'models' / 'OpenThai2.1-OCR-Text-20261118'
+_DET_CANDIDATES = sorted(ROOT.glob('models/OpenThai2.*-OCR-Text-*/det.onnx'))
+DET_DIR = _DET_CANDIDATES[-1].parent if _DET_CANDIDATES else (ROOT / 'models' / 'OpenThai2.2-OCR-Text-20261127')
 _ENGINE = None
 _ERR = None
 

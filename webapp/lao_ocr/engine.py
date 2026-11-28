@@ -151,7 +151,7 @@ class LaoOCR:
         if use_detector:
             try:
                 from . import detlayout
-                dets = sorted(self.root.glob('models/OpenThai2.1-OCR-Text-*/det.onnx'))
+                dets = sorted(self.root.glob('models/OpenThai2.*-OCR-Text-*/det.onnx'))
                 if dets:
                     detlayout.DET_DIR = dets[-1].parent
                 if detlayout.available():

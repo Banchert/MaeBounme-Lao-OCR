@@ -13,6 +13,14 @@ import gradio as gr
 from lao_ocr.core import Codec
 from lao_ocr.layout import is_junk_line, segment_page, to_tensor
 from lao_ocr.bill_checker import check_bill
+try:
+    from lao_ocr.thai_fusion import OpenThai22Rec, fuse_thai_reading
+    OT22_THAI = OpenThai22Rec()
+    print(f"Thai Dual-Fusion: OpenThai 2.2 loaded ({OT22_THAI.model_dir.name})")
+except Exception as _ot_exc:
+    OT22_THAI = None
+    fuse_thai_reading = None
+    print("Thai Dual-Fusion not loaded:", _ot_exc)
 
 ROOT = Path(__file__).resolve().parent
 # Prefer newly trained Tri-lingual model (Lao + Thai + English)
@@ -251,6 +259,20 @@ def _recognize(gray_crop: np.ndarray, lang: str = LANG_AUTO, use_lm: bool = True
             masked = logits.copy()
             masked[:, _IS_THAI if n_lao >= n_thai else _IS_LAO] = -1e9
             text = codec.decode(masked.argmax(-1).tolist())
+    # Dual-Recognizer Thai Fusion: if line is Thai and confidence < 0.92, let OpenThai 2.2 verify!
+    if OT22_THAI is not None and fuse_thai_reading is not None:
+        n_lao = sum("\u0e80" <= c <= "\u0eff" for c in text)
+        n_thai = sum("\u0e00" <= c <= "\u0e7f" for c in text)
+        if n_thai > 0 and n_thai >= n_lao:
+            p = _probs(logits)
+            idxs = p.argmax(-1).tolist()
+            confs, prev = [], None
+            for t_i, idx in enumerate(idxs):
+                if idx and idx != prev:
+                    confs.append(float(p[t_i, idx]))
+                prev = idx
+            mean_conf = float(np.mean(confs)) if confs else 0.0
+            text, _, _ = fuse_thai_reading(text, mean_conf, gray_crop, OT22_THAI, fallback_below=0.92)
     return text.replace("ໍ\u0eb2", "ຳ").strip()
 
 

@@ -15,7 +15,7 @@ SMALL_KEYS = ('model_type', 'hidden_act', 'backbone_config', 'hidden_size', 'mlp
               'attention_dropout', 'layer_norm_eps')
 
 ROOT = Path(__file__).resolve().parents[1]
-ORIGINAL = ROOT / 'models/OpenThai2.1-OCR-Text-20261118'
+ORIGINAL = ROOT / 'models/OpenThai2.2-OCR-Text-20261127'
 ARCHITECTURE = ROOT / 'models/ppocrv6-tiny-architecture/config.json'
 # Explicit modern Lao inventory, not unassigned Unicode slots. A corpus may
 # require extra historical/Pali characters; supply them with prepare --extra-chars.
