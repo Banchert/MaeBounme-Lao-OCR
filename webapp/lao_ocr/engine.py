@@ -68,6 +68,8 @@ class OCRResult:
     rectify_summary: str = ''
     markdown: str = ''
     bill: object = None  # BillReport from lao_ocr.bill_checker
+    watermark_text: str = ''
+    num_blocks: int = 1
 
 
 def _find_rec_dir(root: Path) -> Path:
@@ -203,8 +205,10 @@ class LaoOCR:
             image = image[:, :, :3]
         return np.ascontiguousarray(image)
 
-    def read(self, image, lang: str = 'auto', use_lm: bool = True, rectify: bool = True) -> OCRResult:
+    def read(self, image, lang: str = 'auto', use_lm: bool = True, rectify: bool = True,
+             clean_stamps: bool = True, read_watermark: bool = False) -> OCRResult:
         from .bill_checker import check_bill
+        from .doc_filters import format_blocks_text, read_watermark_layer
         from .markdown_fmt import format_markdown
 
         t0 = time.time()
@@ -213,13 +217,14 @@ class LaoOCR:
         res = None
         if self.detector is not None and not is_single_line(gray if gray.mean() >= 127 else 255 - gray):
             try:
-                rows_b, info = self.detector.read_rows_with_boxes(img, rectify=rectify)
+                rows_b, info = self.detector.read_rows_with_boxes(img, rectify=rectify, clean_stamps=clean_stamps)
             except Exception as exc:
                 print('detector failed, using projection cutting:', exc)
                 rows_b = None
             if rows_b:
-                lines, rows_cells = [], []
-                for items in rows_b:
+                lines, rows_cells, kept_blocks = [], [], []
+                raw_blocks = info.get('row_blocks') or [0] * len(rows_b)
+                for items, bi in zip(rows_b, raw_blocks):
                     texts, cell_pairs = [], []
                     for c, box in items:
                         t = self.read_line(c, lang, use_lm)
@@ -229,16 +234,29 @@ class LaoOCR:
                     if texts:
                         lines.append('   '.join(texts))
                         rows_cells.append(cell_pairs)
+                        kept_blocks.append(bi)
                 lh = info['line_height']
                 rect_img = info.get('rectified_img')
                 pw = rect_img.shape[1] if rect_img is not None else img.shape[1]
-                plain_text = '\n'.join(lines)
+                plain_text = format_blocks_text(rows_cells, kept_blocks, line_height=lh) if rows_cells else '\n'.join(lines)
+                wm_text = ''
+                if read_watermark and info.get('watermark_mask') is not None:
+                    wm_lines = read_watermark_layer(
+                        info['watermark_mask'],
+                        lambda c: self.read_line(c, lang, use_lm),
+                        detect_fn=self.detector._engine().detect,
+                    )
+                    if wm_lines:
+                        wm_text = '\n'.join(wm_lines)
+                        plain_text = f"{plain_text}\n\n[ลายน้ำ / ตราประทับที่กรองออก]\n{wm_text}"
                 md_text = format_markdown(rows_cells, page_w=pw, line_height=lh) if rows_cells else plain_text
                 res = OCRResult(plain_text, lines, 'detector', lh, info['skew'],
                                 'low resolution: lines are only ~%.0f px tall' % lh if lh and lh < 14 else None,
                                 rectify_summary=info.get('rectify_summary', ''),
                                 markdown=md_text,
-                                bill=check_bill(plain_text))
+                                bill=check_bill(plain_text),
+                                watermark_text=wm_text,
+                                num_blocks=info.get('num_blocks', 1))
         if res is None:
             page = segment_page(img, rectify=rectify)
             lines = []

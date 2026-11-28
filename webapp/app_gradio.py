@@ -364,7 +364,7 @@ print("Line finder:", "text detector (PP-OCRv6 DB)" if DETECTOR_OK else
       f"projection cutting ({getattr(detlayout, '_ERR', None) or LAYOUT})")
 
 
-def _detector_rows(img, rectify: bool = True):
+def _detector_rows(img, rectify: bool = True, clean_stamps: bool = True):
     """rows of (crop, quad_box) from the learned detector, or None to use projection cutting"""
     if not DETECTOR_OK:
         return None
@@ -373,14 +373,15 @@ def _detector_rows(img, rectify: bool = True):
     if is_single_line(gray if gray.mean() >= 127 else 255 - gray):
         return None  # a single cropped line: read it as it is
     try:
-        rows, info = detlayout.read_rows_with_boxes(img, rectify=rectify)
+        rows, info = detlayout.read_rows_with_boxes(img, rectify=rectify, clean_stamps=clean_stamps)
     except Exception as exc:
         print("detector failed, using projection cutting:", exc)
         return None
     return (rows, info) if rows else None
 
 
-def run_ocr(input_image, lang=LANG_AUTO, use_lm=True, keep_lines=False, as_markdown=False, rectify=True):
+def run_ocr(input_image, lang=LANG_AUTO, use_lm=True, keep_lines=False, as_markdown=False, rectify=True,
+            clean_stamps=True, read_watermark=False):
     """Single-pass unified OCR: returns (plain_text, md_text, bill_html, lat_str, char_count, res_str, rectified_img)."""
     if input_image is None:
         return (
@@ -398,13 +399,15 @@ def run_ocr(input_image, lang=LANG_AUTO, use_lm=True, keep_lines=False, as_markd
     res_str = f"{w} × {h} px"
 
     # Works for both a single line crop and a whole page: the page is rectified,
-    # cut into straightened text lines, and each line goes to the recognizer ONCE,
-    # producing Plain Text + Markdown Table + Bill Calculation together.
-    det_rows = _detector_rows(input_image, rectify=rectify)
+    # filtered (stamps/watermarks/icons), split into multi-page columns if needed,
+    # and each line goes to the recognizer ONCE.
+    det_rows = _detector_rows(input_image, rectify=rectify, clean_stamps=clean_stamps)
     if det_rows is not None:  # learned text detector: photos, tilt, columns, tables
+        from lao_ocr.doc_filters import format_blocks_text, read_watermark_layer
         rows, info = det_rows
-        recognized_lines, rows_cells, keep = [], [], []
-        for items in rows:
+        recognized_lines, rows_cells, kept_blocks, keep = [], [], [], []
+        raw_blocks = info.get("row_blocks") or [0] * len(rows)
+        for items, bi in zip(rows, raw_blocks):
             texts, cell_pairs = [], []
             for c, box in items:
                 t = _recognize(c, lang, use_lm)
@@ -415,21 +418,32 @@ def run_ocr(input_image, lang=LANG_AUTO, use_lm=True, keep_lines=False, as_markd
             if texts:
                 recognized_lines.append("   ".join(texts))
                 rows_cells.append(cell_pairs)
+                kept_blocks.append(bi)
         if keep_lines and keep and _new_page(input_image):
             try:
                 _queue_lines([k[0] for k in keep], [k[1] for k in keep])
             except Exception as exc:
                 print("could not keep lines:", exc)
-        plain_text = "\n".join(recognized_lines)
+        lh = info["line_height"]
+        plain_text = format_blocks_text(rows_cells, kept_blocks, line_height=lh) if rows_cells else "\n".join(recognized_lines)
+        if read_watermark and info.get("watermark_mask") is not None:
+            wm_lines = read_watermark_layer(
+                info["watermark_mask"],
+                lambda c: _recognize(c, lang, use_lm),
+                detect_fn=detlayout._engine().detect,
+            )
+            if wm_lines:
+                plain_text += "\n\n[ลายน้ำ / ตราประทับที่กรองออก]\n" + "\n".join(wm_lines)
         from lao_ocr.markdown_fmt import format_markdown
         rect_img = info.get("rectified_img")
         rw = rect_img.shape[1] if rect_img is not None else w
-        md_text = format_markdown(rows_cells, page_w=rw, line_height=info["line_height"]) if rows_cells else plain_text
+        md_text = format_markdown(rows_cells, page_w=rw, line_height=lh) if rows_cells else plain_text
         bill_html = check_bill(plain_text).to_html()
         display_text = md_text if as_markdown else plain_text
-        lh = info["line_height"]
         rect_tag = f" | 📐 {info.get('rectify_summary', '')}" if rectify and info.get("rectify_summary") else ""
-        mode_str = f"เอกสาร ({len(rows)} แถว, {info['boxes']} กล่องข้อความ) | ตัวตรวจจับข้อความ | สูงบรรทัด ~{lh:.0f}px{rect_tag}"
+        n_blk = info.get("num_blocks", 1)
+        blk_tag = f" | 📄 แยก {n_blk} คอลัมน์/หน้า" if n_blk > 1 else ""
+        mode_str = f"เอกสาร ({len(rows)} แถว, {info['boxes']} กล่องข้อความ){blk_tag} | ตัวตรวจจับข้อความ | สูงบรรทัด ~{lh:.0f}px{rect_tag}"
         char_count = f"{len(plain_text)} ตัวอักษร ({mode_str})"
         if lh and lh < 14:
             char_count = "⚠️ ภาพความละเอียดต่ำ: บรรทัดสูงเพียง ~%.0f px — ถ้าอ่านผิดมาก ให้ใช้ภาพที่ละเอียดกว่า\n" % lh + char_count
@@ -763,7 +777,10 @@ with gr.Blocks(title="Lao + Thai + English OCR Studio") as demo:
                     with gr.Row():
                         lm_input = gr.Checkbox(value=LAO_LM is not None, interactive=LAO_LM is not None,
                                                label="🧠 ตัวช่วยเดาคำ (LM v6)")
-                        rectify_input = gr.Checkbox(value=True, label="📐 ปรับรูป & จัดแถวให้ตรงก่อนอ่าน")
+                        rectify_input = gr.Checkbox(value=True, label="📐 ปรับรูป & จัดแถวตรง")
+                        clean_stamps_input = gr.Checkbox(value=True, label="🧹 กรองตราประทับ/ลายน้ำ/ไอคอน")
+                    with gr.Row():
+                        read_wm_input = gr.Checkbox(value=False, label="🔍 อ่านลายน้ำ 45° / ตราประทับ")
                         md_input = gr.Checkbox(value=False, label="📑 Markdown / ตาราง")
                         keep_input = gr.Checkbox(value=False, label="💾 เก็บไว้สอนโมเดล")
                     with gr.Row():
@@ -878,7 +895,7 @@ with gr.Blocks(title="Lao + Thai + English OCR Studio") as demo:
     # Manual Scan ONLY when user clicks '🚀 เริ่มสแกน OCR' — ONE pass fills Text + Markdown Table + Bill Calc!
     submit_btn.click(
         fn=run_ocr,
-        inputs=[image_input, lang_input, lm_input, keep_input, md_input, rectify_input],
+        inputs=[image_input, lang_input, lm_input, keep_input, md_input, rectify_input, clean_stamps_input, read_wm_input],
         outputs=[text_output, md_raw_output, bill_check_html, speed_badge, count_badge, res_badge, rectified_preview],
     )
     md_raw_output.change(fn=lambda m: m or "_ไม่มีข้อมูล Markdown_", inputs=[md_raw_output], outputs=[md_preview])

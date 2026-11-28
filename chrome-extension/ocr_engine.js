@@ -200,6 +200,207 @@ class OfflineLaoOCR {
     this.thaiSession = await ort.InferenceSession.create(buf, { executionProviders: ["wasm"] });
   }
 
+  /**
+   * Remove red/blue rubber stamps & faint gray diagonal (45 deg) watermarks without
+   * damaging real dark text or thin Lao tone marks (່ ້).
+   */
+  cleanStampsAndWatermarks(srcCanvas) {
+    const W = srcCanvas.width;
+    const H = srcCanvas.height;
+    const out = document.createElement("canvas");
+    out.width = W;
+    out.height = H;
+    const ctx = out.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(srcCanvas, 0, 0);
+    const imgData = ctx.getImageData(0, 0, W, H);
+    const d = imgData.data;
+
+    // Estimate paper brightness (92nd percentile)
+    const hist = new Uint32Array(256);
+    const n = W * H;
+    for (let i = 0; i < d.length; i += 4) {
+      hist[(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0]++;
+    }
+    let paper = 250, acc = 0;
+    for (let i = 0; i < 256; i++) {
+      acc += hist[i];
+      if (acc >= n * 0.92) { paper = i; break; }
+    }
+    if (paper < 155) return srcCanvas; // dark-mode screen: leave untouched
+
+    let changed = false;
+    // Pass 1: remove red & blue rubber stamps without touching dark black ink
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      const y = 0.299 * r + 0.587 * g + 0.114 * b;
+      const isRed = (r - Math.max(g, b)) > 36 && y > 75;
+      const isBlue = (b - Math.max(r, g)) > 44 && y > 75;
+      if (isRed || isBlue) {
+        d[i] = d[i + 1] = d[i + 2] = paper;
+        changed = true;
+      }
+    }
+
+    // Pass 2: suppress LARGE faint-gray diagonal watermarks while NEVER touching dark text or tiny 2-4px tone marks (່ ້)
+    let darkCount = 0;
+    const darkHist = new Uint32Array(256);
+    const darkLim = Math.max(40, paper - 50);
+    for (let i = 0; i < d.length; i += 4) {
+      const y = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0;
+      if (y < darkLim) { darkHist[y]++; darkCount++; }
+    }
+    if (darkCount > 200) {
+      let inkMed = 40, dAcc = 0;
+      for (let i = 0; i < darkLim; i++) {
+        dAcc += darkHist[i];
+        if (dAcc >= darkCount * 0.35) { inkMed = i; break; }
+      }
+      const wmLo = Math.min(paper - 18, Math.max(168, inkMed + 95));
+      const wmHi = paper - 6;
+      if (wmHi > wmLo + 8) {
+        // 2x-downsampled connected-component filter so it runs in <10ms in browser WASM/JS
+        const sw = Math.ceil(W / 2);
+        const sh = Math.ceil(H / 2);
+        const mask = new Uint8Array(sw * sh);
+        for (let sy = 0; sy < sh; sy++) {
+          const py = Math.min(H - 1, sy * 2);
+          const rowOff = py * W;
+          const mOff = sy * sw;
+          for (let sx = 0; sx < sw; sx++) {
+            const p = (rowOff + Math.min(W - 1, sx * 2)) * 4;
+            const y = (0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]) | 0;
+            if (y >= wmLo && y <= wmHi) mask[mOff + sx] = 1;
+          }
+        }
+        const vis = new Uint8Array(sw * sh);
+        const erase = new Uint8Array(sw * sh);
+        const q = new Int32Array(sw * sh);
+        const pts = new Int32Array(sw * sh);
+        for (let idx = 0; idx < sw * sh; idx++) {
+          if (!mask[idx] || vis[idx]) continue;
+          let head = 0, tail = 0, cnt = 0;
+          q[tail++] = idx;
+          vis[idx] = 1;
+          let minX = sw, maxX = 0, minY = sh, maxY = 0;
+          while (head < tail) {
+            const cur = q[head++];
+            pts[cnt++] = cur;
+            const cx = cur % sw, cy = (cur - cx) / sw;
+            if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+            if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+            if (cx > 0 && mask[cur - 1] && !vis[cur - 1]) { vis[cur - 1] = 1; q[tail++] = cur - 1; }
+            if (cx + 1 < sw && mask[cur + 1] && !vis[cur + 1]) { vis[cur + 1] = 1; q[tail++] = cur + 1; }
+            if (cy > 0 && mask[cur - sw] && !vis[cur - sw]) { vis[cur - sw] = 1; q[tail++] = cur - sw; }
+            if (cy + 1 < sh && mask[cur + sw] && !vis[cur + sw]) { vis[cur + sw] = 1; q[tail++] = cur + sw; }
+          }
+          // Only erase large faint-gray blobs (>= 220 full-res px & >= 24px span)
+          if (cnt >= 55 && ((maxX - minX + 1) >= 12 || (maxY - minY + 1) >= 12)) {
+            for (let k = 0; k < cnt; k++) erase[pts[k]] = 1;
+          }
+        }
+        for (let py = 0; py < H; py++) {
+          const mOff = (py >> 1) * sw;
+          const rowOff = py * W;
+          for (let px = 0; px < W; px++) {
+            if (erase[mOff + (px >> 1)]) {
+              const p = (rowOff + px) * 4;
+              const y = (0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]) | 0;
+              if (y >= wmLo - 8) {
+                d[p] = d[p + 1] = d[p + 2] = paper;
+                changed = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (!changed) return srcCanvas;
+    ctx.putImageData(imgData, 0, 0);
+    return out;
+  }
+
+  /**
+   * Recursive XY-Cut to split 2-page book spreads (left page -> right page) and
+   * 4-page 2x2 grids into reading-order blocks so columns NEVER merge left-to-right!
+   */
+  splitMultiPageBlocks(boxes, lh, depth = 0) {
+    if (boxes.length < 4 || depth >= 4) return [boxes];
+    let bx1 = 1e9, by1 = 1e9, bx2 = -1e9, by2 = -1e9;
+    for (const b of boxes) {
+      if (b[0] < bx1) bx1 = b[0];
+      if (b[1] < by1) by1 = b[1];
+      if (b[2] > bx2) bx2 = b[2];
+      if (b[3] > by2) by2 = b[3];
+    }
+    const bw = bx2 - bx1;
+    const bh = by2 - by1;
+
+    // 1) Horizontal split for 4-page (2x2) grids
+    if (bh > 12 * lh) {
+      const ys = [...boxes].sort((a, b) => (a[1] + a[3]) * 0.5 - (b[1] + b[3]) * 0.5);
+      let bestGap = 0, splitIdx = -1, maxY2 = ys[0][3];
+      for (let k = 1; k < ys.length; k++) {
+        const gap = ys[k][1] - maxY2;
+        const midY = 0.5 * (maxY2 + ys[k][1]);
+        if (gap > bestGap && k >= 3 && (ys.length - k) >= 3 && midY > by1 + 0.25 * bh && midY < by1 + 0.75 * bh) {
+          bestGap = gap;
+          splitIdx = k;
+        }
+        if (ys[k][3] > maxY2) maxY2 = ys[k][3];
+      }
+      if (splitIdx > 0 && bestGap >= Math.max(3.2 * lh, 0.06 * bh)) {
+        return [
+          ...this.splitMultiPageBlocks(ys.slice(0, splitIdx), lh, depth + 1),
+          ...this.splitMultiPageBlocks(ys.slice(splitIdx), lh, depth + 1)
+        ];
+      }
+    }
+
+    // 2) Full-height vertical gutter for 2-page book spreads / 2-column pages
+    if (bw > 10 * lh) {
+      const bins = Math.max(16, Math.floor(bw / 2));
+      const occ = new Uint16Array(bins);
+      for (const b of boxes) {
+        const c0 = Math.max(0, Math.floor((b[0] - bx1) / 2));
+        const c1 = Math.min(bins, Math.ceil((b[2] - bx1) / 2));
+        for (let c = c0; c < c1; c++) occ[c]++;
+      }
+      const loB = Math.floor(bins * 0.25);
+      const hiB = Math.floor(bins * 0.75);
+      const maxCross = boxes.length >= 10 ? 1 : 0;
+      let bestG = 0, bestMidX = -1;
+      for (const thr of (maxCross > 0 ? [0, maxCross] : [0])) {
+        let s = -1;
+        for (let bi = loB; bi < hiB; bi++) {
+          if (occ[bi] <= thr) {
+            if (s === -1) s = bi;
+          } else if (s !== -1) {
+            const gw = (bi - s) * 2;
+            if (gw > bestG) { bestG = gw; bestMidX = bx1 + (s + bi); }
+            s = -1;
+          }
+        }
+        if (s !== -1) {
+          const gw = (hiB - s) * 2;
+          if (gw > bestG) { bestG = gw; bestMidX = bx1 + (s + hiB); }
+        }
+        if (bestMidX > 0 && bestG >= Math.max(1.5 * lh, 0.025 * bw)) break;
+      }
+      if (bestMidX > 0 && bestG >= Math.max(1.5 * lh, 0.025 * bw)) {
+        const left = boxes.filter((b) => (b[0] + b[2]) * 0.5 < bestMidX);
+        const right = boxes.filter((b) => (b[0] + b[2]) * 0.5 >= bestMidX);
+        if (left.length >= 3 && right.length >= 3) {
+          return [
+            ...this.splitMultiPageBlocks(left, lh, depth + 1),
+            ...this.splitMultiPageBlocks(right, lh, depth + 1)
+          ];
+        }
+      }
+    }
+    return [boxes];
+  }
+
   enhanceA4Canvas(srcCanvas) {
     const W = srcCanvas.width;
     const H = srcCanvas.height;
@@ -379,23 +580,43 @@ class OfflineLaoOCR {
     // prevents clipping Lao tall stems / top marks / bottom vowels (ຸ ູ ຼ) while NEVER swallowing adjacent lines
     this.refineBoxesInkAware(canvas, boxes);
 
-    boxes.sort((a, b) => (a[1] + a[3]) / 2 - (b[1] + b[3]) / 2);
+    // Filter out giant icon/watermark/ornament boxes (square blobs > 2.8x median line height)
+    const hsAll = boxes.map((b) => b[3] - b[1]).sort((a, b) => a - b);
+    const medLineH = Math.max(10, hsAll[Math.floor(hsAll.length / 2)] || 22);
+    const filtered = boxes.filter((b) => {
+      const bwB = b[2] - b[0];
+      const bhB = b[3] - b[1];
+      const isGiantIcon = bhB > medLineH * 3.0 && bwB / Math.max(1, bhB) < 2.2;
+      return !isGiantIcon;
+    });
+    const useBoxes = filtered.length ? filtered : boxes;
+
+    // Automatic 2-page book spread / 4-page 2x2 grid / multi-column XY-Cut ordering!
+    const blocks = this.splitMultiPageBlocks(useBoxes, medLineH);
     const rows = [];
-    for (const b of boxes) {
-      let placed = false;
-      for (const row of rows) {
-        const ref = row[0];
-        const ov = Math.min(ref[3], b[3]) - Math.max(ref[1], b[1]);
-        const minH = Math.min(ref[3] - ref[1], b[3] - b[1]);
-        if (ov > 0.45 * minH) {
-          row.push(b);
-          placed = true;
-          break;
+    for (let bi = 0; bi < blocks.length; bi++) {
+      const blk = [...blocks[bi]].sort((a, b) => (a[1] + a[3]) / 2 - (b[1] + b[3]) / 2);
+      const blkRows = [];
+      for (const b of blk) {
+        let placed = false;
+        for (const row of blkRows) {
+          const ref = row[0];
+          const ov = Math.min(ref[3], b[3]) - Math.max(ref[1], b[1]);
+          const minH = Math.min(ref[3] - ref[1], b[3] - b[1]);
+          if (ov > 0.45 * minH) {
+            row.push(b);
+            placed = true;
+            break;
+          }
         }
+        if (!placed) blkRows.push([b]);
       }
-      if (!placed) rows.push([b]);
+      for (const row of blkRows) {
+        row.sort((a, b) => a[0] - b[0]);
+        row._blockIdx = bi;
+      }
+      rows.push(...blkRows);
     }
-    for (const row of rows) row.sort((a, b) => a[0] - b[0]);
     return rows;
   }
 
@@ -756,9 +977,12 @@ class OfflineLaoOCR {
     });
   }
 
-  /** Format structured row boxes into 4 layout modes: 'paragraph' | 'exact' | 'markdown' | 'two_col' */
+  /** Format structured row boxes into 4 layout modes: 'paragraph' | 'exact' | 'markdown' | 'two_col'
+   *  Respects multi-page / multi-column block indices (blockIdx) from splitMultiPageBlocks()
+   *  so 2-page book spreads and 4-page grids NEVER merge left-to-right!
+   */
   formatLayout(pageItems, pageW, mode = "paragraph") {
-    // pageItems: array of { box: [x1,y1,x2,y2], text: string }
+    // pageItems: array of { box: [x1,y1,x2,y2], text: string, blockIdx?: number }
     if (!pageItems.length) return "";
     const heights = pageItems.map((it) => it.box[3] - it.box[1]).sort((a, b) => a - b);
     const lh = Math.max(10, heights[Math.floor(heights.length / 2)] || 20);
@@ -797,90 +1021,105 @@ class OfflineLaoOCR {
       return [renderCol(fullW), renderCol(left), renderCol(right)].filter(Boolean).join("\n\n");
     }
 
-    const rows = groupRows(pageItems);
+    // Partition items by detected page/column blockIdx (preserving reading order 0, 1, 2, ...)
+    const blockMap = new Map();
+    for (const it of pageItems) {
+      const bi = it.blockIdx || 0;
+      if (!blockMap.has(bi)) blockMap.set(bi, []);
+      blockMap.get(bi).push(it);
+    }
+    const blockLists = [...blockMap.entries()].sort((a, b) => a[0] - b[0]).map((e) => e[1]);
 
-    if (mode === "exact") {
-      const leftMin = Math.min(...rows.map((r) => r[0].box[0]));
+    const formatBlock = (blkItems) => {
+      const rows = groupRows(blkItems);
+      if (!rows.length) return "";
+
+      if (mode === "exact") {
+        const leftMin = Math.min(...rows.map((r) => r[0].box[0]));
+        const out = [];
+        let prevY2 = null;
+        for (const r of rows) {
+          const y1 = Math.min(...r.map((x) => x.box[1]));
+          const y2 = Math.max(...r.map((x) => x.box[3]));
+          if (prevY2 !== null && y1 - prevY2 > lh * 1.15) out.push("");
+          const indentSpaces = Math.max(0, Math.min(12, Math.round((r[0].box[0] - leftMin) / (lh * 0.6))));
+          let line = " ".repeat(indentSpaces);
+          for (let i = 0; i < r.length; i++) {
+            if (i > 0) {
+              const gap = r[i].box[0] - r[i - 1].box[2];
+              line += gap > lh * 2.5 ? "      " : "   ";
+            }
+            line += r[i].text;
+          }
+          out.push(line);
+          prevY2 = y2;
+        }
+        return out.join("\n").trim();
+      }
+
+      if (mode === "markdown") {
+        const out = [];
+        let i = 0, prevY2 = null;
+        while (i < rows.length) {
+          const r = rows[i];
+          const y1 = Math.min(...r.map((x) => x.box[1]));
+          const y2 = Math.max(...r.map((x) => x.box[3]));
+          const rh = y2 - y1;
+          if (prevY2 !== null && y1 - prevY2 > lh * 1.35 && out.length && out[out.length - 1] !== "") out.push("");
+          if (r.length >= 2) {
+            let j = i + 1;
+            while (j < rows.length && rows[j].length >= 2) j++;
+            if (j - i >= 2) {
+              const cols = Math.min(8, Math.max(...rows.slice(i, j).map((x) => x.length)));
+              const mkRow = (row) => "| " + Array.from({ length: cols }, (_, c) => (row[c]?.text || "").replace(/\|/g, "\\|")).join(" | ") + " |";
+              out.push(mkRow(rows[i]));
+              out.push("| " + Array(cols).fill("---").join(" | ") + " |");
+              for (let k = i + 1; k < j; k++) out.push(mkRow(rows[k]));
+              out.push("");
+              prevY2 = Math.max(...rows[j - 1].map((x) => x.box[3]));
+              i = j;
+              continue;
+            }
+          }
+          const txt = r.map((x) => x.text).join("   ");
+          if (r.length === 1 && txt.length <= 80 && rh >= lh * 1.35) out.push(`## ${txt}`);
+          else if (/^(?:ມາດຕາ|มาตรา|ข้อ|ຂໍ້)\s*\d+/.test(txt)) out.push(`**${txt}**`);
+          else out.push(txt);
+          prevY2 = y2;
+          i++;
+        }
+        return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+      }
+
+      // Default: 'paragraph' — smart paragraph grouping by vertical gaps & first-line indentation
+      const leftPositions = rows.map((r) => r[0].box[0]).sort((a, b) => a - b);
+      const bodyLeft = leftPositions[Math.floor(leftPositions.length * 0.25)] || 0;
       const out = [];
       let prevY2 = null;
       for (const r of rows) {
         const y1 = Math.min(...r.map((x) => x.box[1]));
         const y2 = Math.max(...r.map((x) => x.box[3]));
-        if (prevY2 !== null && y1 - prevY2 > lh * 1.15) out.push("");
-        const indentSpaces = Math.max(0, Math.min(12, Math.round((r[0].box[0] - leftMin) / (lh * 0.6))));
-        let line = " ".repeat(indentSpaces);
-        for (let i = 0; i < r.length; i++) {
-          if (i > 0) {
-            const gap = r[i].box[0] - r[i - 1].box[2];
-            line += gap > lh * 2.5 ? "      " : "   ";
-          }
-          line += r[i].text;
+        const x1 = r[0].box[0];
+        const txt = r.map((x) => x.text).join("   ");
+        const isIndented = x1 - bodyLeft > lh * 1.15 && r.length === 1;
+        const bigGap = prevY2 !== null && y1 - prevY2 > lh * 1.15;
+        if ((bigGap || isIndented) && out.length && out[out.length - 1] !== "") {
+          out.push("");
         }
-        out.push(line);
+        out.push((isIndented ? "    " : "") + txt);
         prevY2 = y2;
       }
       return out.join("\n").trim();
-    }
+    };
 
-    if (mode === "markdown") {
-      const out = [];
-      let i = 0, prevY2 = null;
-      while (i < rows.length) {
-        const r = rows[i];
-        const y1 = Math.min(...r.map((x) => x.box[1]));
-        const y2 = Math.max(...r.map((x) => x.box[3]));
-        const rh = y2 - y1;
-        if (prevY2 !== null && y1 - prevY2 > lh * 1.35 && out.length && out[out.length - 1] !== "") out.push("");
-        // Table detection: >= 2 consecutive multi-cell rows
-        if (r.length >= 2) {
-          let j = i + 1;
-          while (j < rows.length && rows[j].length >= 2) j++;
-          if (j - i >= 2) {
-            const cols = Math.min(8, Math.max(...rows.slice(i, j).map((x) => x.length)));
-            const mkRow = (row) => "| " + Array.from({ length: cols }, (_, c) => (row[c]?.text || "").replace(/\|/g, "\\|")).join(" | ") + " |";
-            out.push(mkRow(rows[i]));
-            out.push("| " + Array(cols).fill("---").join(" | ") + " |");
-            for (let k = i + 1; k < j; k++) out.push(mkRow(rows[k]));
-            out.push("");
-            prevY2 = Math.max(...rows[j - 1].map((x) => x.box[3]));
-            i = j;
-            continue;
-          }
-        }
-        const txt = r.map((x) => x.text).join("   ");
-        if (r.length === 1 && txt.length <= 80 && rh >= lh * 1.35) out.push(`## ${txt}`);
-        else if (/^(?:ມາດຕາ|มาตรา|ข้อ|ຂໍ້)\s*\d+/.test(txt)) out.push(`**${txt}**`);
-        else out.push(txt);
-        prevY2 = y2;
-        i++;
-      }
-      return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    }
-
-    // Default: 'paragraph' — smart paragraph grouping by vertical gaps & first-line indentation
-    const leftPositions = rows.map((r) => r[0].box[0]).sort((a, b) => a - b);
-    const bodyLeft = leftPositions[Math.floor(leftPositions.length * 0.25)] || 0;
-    const out = [];
-    let prevY2 = null;
-    for (const r of rows) {
-      const y1 = Math.min(...r.map((x) => x.box[1]));
-      const y2 = Math.max(...r.map((x) => x.box[3]));
-      const x1 = r[0].box[0];
-      const txt = r.map((x) => x.text).join("   ");
-      const isIndented = x1 - bodyLeft > lh * 1.35 && r.length === 1;
-      const bigGap = prevY2 !== null && y1 - prevY2 > lh * 1.25;
-      if ((bigGap || isIndented) && out.length && out[out.length - 1] !== "") {
-        out.push("");
-      }
-      out.push((isIndented ? "    " : "") + txt);
-      prevY2 = y2;
-    }
-    return out.join("\n").trim();
+    const sep = mode === "markdown" && blockLists.length > 1 ? "\n\n---\n\n" : "\n\n";
+    return blockLists.map(formatBlock).filter(Boolean).join(sep);
   }
 
   async readCanvas(canvas, modelMode = "auto", a4Mode = true, onStatus = null, layoutMode = "paragraph", onProgress = null, shouldCancel = null) {
     const t0 = performance.now();
-    const workCanvas = a4Mode ? this.enhanceA4Canvas(canvas) : canvas;
+    const cleanCanvas = a4Mode ? this.cleanStampsAndWatermarks(canvas) : canvas;
+    const workCanvas = a4Mode ? this.enhanceA4Canvas(cleanCanvas) : cleanCanvas;
     const rows = await this.detectRows(workCanvas, a4Mode);
     const flatBoxes = rows.flat();
     const totalBoxes = Math.max(1, flatBoxes.length);
@@ -920,7 +1159,7 @@ class OfflineLaoOCR {
         const txt = await this.recognizeCrop(workCanvas, box, effectiveMode);
         doneBoxes++;
         if (txt && !/^[\.\-_=~*·•\s]+$/.test(txt)) {
-          items.push({ box, text: txt, conf: this._lastConf || 0 });
+          items.push({ box, text: txt, conf: this._lastConf || 0, blockIdx: row._blockIdx || 0 });
           confSum += this._lastConf || 0;
         }
         if (onProgress && (doneBoxes % 2 === 0 || doneBoxes === totalBoxes)) {
