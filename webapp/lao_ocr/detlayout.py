@@ -105,14 +105,14 @@ def _expand_quad_ink_aware(
     if ry2 - ry1 >= 6 and rx2 - rx1 >= 6:
         patch = gray[ry1:ry2, rx1:rx2]
         bg = float(np.percentile(patch, 85)) if patch.mean() >= 127 else float(np.percentile(patch, 15))
-        dark = np.abs(patch.astype(np.float32) - bg) > max(26.0, 0.18 * abs(bg - float(patch.min() if patch.mean() >= 127 else patch.max())))
-        row_has_ink = dark.sum(axis=1) >= max(2, int((rx2 - rx1) * 0.008))
+        dark = np.abs(patch.astype(np.float32) - bg) > max(20.0, 0.15 * abs(bg - float(patch.min() if patch.mean() >= 127 else patch.max())))
+        row_has_ink = dark.sum(axis=1) >= 1
         ink_ys = np.flatnonzero(row_has_ink)
         if len(ink_ys) >= 3:
-            # Find ink extent connected within gap <= 0.30*height of the core box (ignores stray neighbor specks)
+            # Find ink extent connected within gap <= 0.50*height of the core box (catches floating ່ ້!)
             core_top_rel = max(0, int(y1_cur - ry1))
             core_bot_rel = min(ry2 - ry1 - 1, int(y2_cur - ry1))
-            max_gap = max(3, int(round(0.32 * height)))
+            max_gap = max(5, int(round(0.50 * height)))
 
             # Walk upward from core_top_rel
             snap_top = core_top_rel
@@ -138,9 +138,11 @@ def _expand_quad_ink_aware(
                     if gap > max_gap:
                         break
 
-            breath = max(2.0, 0.10 * height)
-            target_y1 = max(ceil_y, float(ry1 + snap_top) - breath)
-            target_y2 = min(floor_y, float(ry1 + snap_bot) + breath)
+            breath = max(3.0, 0.14 * height)
+            safe_min_y1 = max(ceil_y, y1_cur - 0.30 * height)
+            safe_max_y2 = min(floor_y, y2_cur + 0.25 * height)
+            target_y1 = max(ceil_y, min(safe_min_y1, float(ry1 + snap_top) - breath))
+            target_y2 = min(floor_y, max(safe_max_y2, float(ry1 + snap_bot) + breath))
             v_top_px = max(2.0, y1_cur - target_y1)
             v_bot_px = max(2.0, target_y2 - y2_cur)
 

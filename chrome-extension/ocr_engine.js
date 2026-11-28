@@ -280,7 +280,7 @@ class OfflineLaoOCR {
       if (x2 - x1 < 6) continue;
 
       // 1) Clamp ceiling/floor at midpoint to nearest horizontally-overlapping neighbor above/below
-      let ceilY = Math.max(0, coreY1 - coreH * 0.90);
+      let ceilY = Math.max(0, coreY1 - coreH * 0.95);
       let floorY = Math.min(H, coreY2 + coreH * 0.80);
       for (let j = 0; j < boxes.length; j++) {
         if (j === i) continue;
@@ -304,12 +304,13 @@ class OfflineLaoOCR {
       const rw = x2 - x1;
       if (rh < 6) continue;
 
-      // 2) Estimate local background & row ink occupancy inside [ry1..ry2, x1..x2]
+      // 2) Scan EVERY pixel horizontally (stride=1, minCols=1) so tiny 2-3px Lao tone marks (່ ້)
+      //    are NEVER skipped!
       let sumLum = 0, minLum = 255, maxLum = 0, nLum = 0;
-      const strideX = Math.max(1, Math.floor(rw / 160));
-      for (let y = ry1; y < ry2; y += Math.max(1, Math.floor(rh / 40))) {
+      const bgStride = Math.max(1, Math.floor(rw / 120));
+      for (let y = ry1; y < ry2; y += Math.max(1, Math.floor(rh / 30))) {
         const rowOff = y * W;
-        for (let x = x1; x < x2; x += strideX) {
+        for (let x = x1; x < x2; x += bgStride) {
           const p = (rowOff + x) * 4;
           const lum = 0.299 * fullData[p] + 0.587 * fullData[p + 1] + 0.114 * fullData[p + 2];
           sumLum += lum;
@@ -321,25 +322,25 @@ class OfflineLaoOCR {
       const meanLum = nLum > 0 ? sumLum / nLum : 240;
       const isLightBg = meanLum >= 127;
       const bg = isLightBg ? Math.min(255, maxLum - 4) : Math.max(0, minLum + 4);
-      const thr = Math.max(24, 0.20 * Math.abs(bg - (isLightBg ? minLum : maxLum)));
-      const minCols = Math.max(2, Math.floor((rw / strideX) * 0.008));
+      const thr = Math.max(20, 0.16 * Math.abs(bg - (isLightBg ? minLum : maxLum)));
 
       const rowInk = new Uint8Array(rh);
       for (let r = 0; r < rh; r++) {
         const rowOff = (ry1 + r) * W;
-        let cnt = 0;
-        for (let x = x1; x < x2; x += strideX) {
+        for (let x = x1; x < x2; x++) {
           const p = (rowOff + x) * 4;
           const lum = 0.299 * fullData[p] + 0.587 * fullData[p + 1] + 0.114 * fullData[p + 2];
-          if (Math.abs(lum - bg) > thr) cnt++;
+          if (Math.abs(lum - bg) > thr) {
+            rowInk[r] = 1;
+            break;
+          }
         }
-        if (cnt >= minCols) rowInk[r] = 1;
       }
 
-      // Walk upward from coreY1 and downward from coreY2 allowing small mark gaps (<= 0.36 * coreH)
+      // Walk upward from coreY1 and downward from coreY2 allowing floating tone-mark gap (<= 0.55 * coreH)
       const coreTopRel = Math.max(0, Math.min(rh - 1, Math.floor(coreY1 - ry1)));
       const coreBotRel = Math.max(0, Math.min(rh - 1, Math.ceil(coreY2 - ry1)));
-      const maxGap = Math.max(3, Math.round(0.36 * coreH));
+      const maxGap = Math.max(5, Math.round(0.55 * coreH));
 
       let snapTop = coreTopRel;
       let gap = 0;
@@ -354,9 +355,13 @@ class OfflineLaoOCR {
         else if (++gap > maxGap) break;
       }
 
-      const breath = Math.max(2.5, 0.12 * coreH);
-      const newY1 = Math.max(ceilY, ry1 + snapTop - breath);
-      const newY2 = Math.min(floorY, ry1 + snapBot + 1 + breath);
+      // Guarantee generous minimum top/bottom margin (NEVER shrink below 0.62*coreH top / 0.45*coreH bottom,
+      // clamped only by neighbor midpoint ceilY / floorY) so stacked Lao tone marks (່ ້) never clip!
+      const breath = Math.max(3.5, 0.14 * coreH);
+      const safeMinY1 = Math.max(ceilY, coreY1 - coreH * 0.62);
+      const safeMaxY2 = Math.min(floorY, coreY2 + coreH * 0.45);
+      const newY1 = Math.max(ceilY, Math.min(safeMinY1, ry1 + snapTop - breath));
+      const newY2 = Math.min(floorY, Math.max(safeMaxY2, ry1 + snapBot + 1 + breath));
       if (newY2 - newY1 >= 6) {
         const dTop = newY1 - b[1];
         const dBot = newY2 - b[3];
