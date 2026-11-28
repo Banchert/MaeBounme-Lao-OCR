@@ -1,8 +1,140 @@
 /**
+ * Compact 5-gram Lao Character Language Model + CTC Prefix Beam Search (100% Offline)
+ * Loads models/lao_charlm_mobile.bin (~1.7 MB) to resolve context-dependent Lao tone marks
+ * (ຜ່ານ vs ຜານ, ຕ່າງໆ vs ຕາງໆ, ໄດ້ແຕ່ງຕັ້ງ) and look-alike letters (ງ↔າ, ຂ↔ຊ).
+ */
+class CompactCharLM {
+  constructor(buf) {
+    const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    if (dv.getUint32(0, true) !== 0x4d4c434c) throw new Error("Bad LCLM header");
+    const count = dv.getUint32(4, true);
+    this.order = dv.getUint32(8, true);
+    this.unk = dv.getFloat32(12, true);
+    this.hashes = new Uint32Array(count);
+    for (let i = 0; i < count; i++) this.hashes[i] = dv.getUint32(16 + i * 4, true);
+    this.qlogp = u8.slice(16 + count * 4, 16 + count * 5);
+    this.cache = new Map();
+    this._backoffPen = Math.log10(0.4);
+  }
+
+  static fnv1a32(str) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      const cp = str.charCodeAt(i);
+      if (cp < 0x80) {
+        h ^= cp; h = Math.imul(h, 0x01000193) >>> 0;
+      } else if (cp < 0x800) {
+        h ^= 0xc0 | (cp >> 6); h = Math.imul(h, 0x01000193) >>> 0;
+        h ^= 0x80 | (cp & 0x3f); h = Math.imul(h, 0x01000193) >>> 0;
+      } else {
+        h ^= 0xe0 | (cp >> 12); h = Math.imul(h, 0x01000193) >>> 0;
+        h ^= 0x80 | ((cp >> 6) & 0x3f); h = Math.imul(h, 0x01000193) >>> 0;
+        h ^= 0x80 | (cp & 0x3f); h = Math.imul(h, 0x01000193) >>> 0;
+      }
+    }
+    return h >>> 0;
+  }
+
+  _lookup(gram) {
+    const h = CompactCharLM.fnv1a32(gram);
+    let lo = 0, hi = this.hashes.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const v = this.hashes[mid];
+      if (v === h) return -(this.qlogp[mid] / 31.875);
+      if (v < h) lo = mid + 1; else hi = mid - 1;
+    }
+    return null;
+  }
+
+  score(ctx, ch) {
+    const key = ("\x02".repeat(this.order) + ctx).slice(-(this.order - 1)) + ch;
+    const cached = this.cache.get(key);
+    if (cached !== undefined) return cached;
+    let pen = 0, res = this.unk + this.order * this._backoffPen;
+    for (let n = this.order; n >= 1; n--) {
+      const v = this._lookup(key.slice(-n));
+      if (v !== null) { res = v + pen; break; }
+      pen += this._backoffPen;
+    }
+    if (this.cache.size > 60000) this.cache.clear();
+    this.cache.set(key, res);
+    return res;
+  }
+}
+
+function _lse10(a, b) {
+  if (a < b) { const t = a; a = b; b = t; }
+  return b > -1e8 ? a + Math.log10(1 + Math.pow(10, b - a)) : a;
+}
+
+function beamDecodeCTC(probs, T, C, chars, lm, blockFn = null, alpha = 0.36, beta = 0.72, beamW = 8) {
+  let beams = new Map([["", [0.0, -1e9]]]);
+  const lmScore = new Map([["", 0.0]]);
+  for (let t = 0; t < T; t++) {
+    const base = t * C;
+    const p0 = probs[base];
+    const cands = [];
+    if (p0 >= 0.98) {
+      cands.push(0);
+    } else {
+      let bestC = 0, bestP = -1;
+      for (let c = 0; c < C; c++) {
+        if (c > 0 && blockFn && blockFn(c)) continue;
+        const p = probs[base + c];
+        if (p > bestP) { bestP = p; bestC = c; }
+        if (p > 0.025) cands.push(c);
+      }
+      if (!cands.length) cands.push(bestC);
+    }
+    if (cands.length === 1 && cands[0] === 0) {
+      const lp0 = Math.log10(Math.max(p0, 1e-12));
+      const next = new Map();
+      for (const [pref, [pb, pnb]] of beams) next.set(pref, [_lse10(pb, pnb) + lp0, -1e9]);
+      beams = next;
+      continue;
+    }
+    const nxt = new Map();
+    const get = (k) => { let v = nxt.get(k); if (!v) { v = [-1e9, -1e9]; nxt.set(k, v); } return v; };
+    for (const [pref, [pb, pnb]] of beams) {
+      const tot = _lse10(pb, pnb);
+      const last = pref.length ? pref[pref.length - 1] : "";
+      for (let ci = 0; ci < cands.length; ci++) {
+        const c = cands[ci];
+        const lp = Math.log10(Math.max(probs[base + c], 1e-12));
+        if (c === 0) { const e = get(pref); e[0] = _lse10(e[0], tot + lp); continue; }
+        if (c >= chars.length) continue;
+        const ch = chars[c];
+        const np = pref + ch;
+        if (!lmScore.has(np)) lmScore.set(np, (lmScore.get(pref) || 0) + (lm ? alpha * lm.score(pref, ch) + beta : 0));
+        const e = get(np);
+        if (ch === last) {
+          e[1] = _lse10(e[1], pb + lp);
+          const s = get(pref); s[1] = _lse10(s[1], pnb + lp);
+        } else {
+          e[1] = _lse10(e[1], tot + lp);
+        }
+      }
+    }
+    const ranked = Array.from(nxt.entries()).sort((a, b) =>
+      (_lse10(b[1][0], b[1][1]) + (lmScore.get(b[0]) || 0)) - (_lse10(a[1][0], a[1][1]) + (lmScore.get(a[0]) || 0))
+    );
+    beams = new Map(ranked.slice(0, beamW));
+  }
+  let best = "", bestS = -1e18;
+  for (const [pref, [pb, pnb]] of beams) {
+    const sc = _lse10(pb, pnb) + (lmScore.get(pref) || 0);
+    if (sc > bestS) { bestS = sc; best = pref; }
+  }
+  return best;
+}
+
+/**
  * MaeBounme Lao-OCR Dual-Model Offline Engine (ONNX Runtime Web / WASM)
- * - Shared Detector: PP-OCRv6 DB Text-Line Detector (models/det.onnx)
- * - Lao Model:       MaeBounme Round 10 PP-OCRv6 Small SVTR (models/rec.onnx, 595 classes)
- * - Thai Model:      OpenThai2.1-OCR-Text (models/thai_rec.onnx, 530 classes, 100% Free)
+ * - Shared Detector: PP-OCRv6 DB Text-Line Detector (models/det.onnx — OpenThai 2.2)
+ * - Lao Model:       MaeBounme Round 18 PP-OCRv6 Small SVTR (models/rec.onnx, 595 classes) + 5-gram CharLM Beam Search
+ * - Thai Model:      Thai Round 3 PP-OCRv6 Small SVTR (models/thai_rec.onnx, 99.5% Thai)
  */
 class OfflineLaoOCR {
   constructor() {
@@ -14,6 +146,7 @@ class OfflineLaoOCR {
     this.thaiSession = null;
     this.thaiChars = [];
     this.laoLex = new Map();
+    this.charLM = null;
     this.ready = false;
   }
 
@@ -37,6 +170,12 @@ class OfflineLaoOCR {
       for (let i = 0; i < words.length; i++) this.laoLex.set(words[i], i);
     } catch (_) {
       this.laoLex = new Map();
+    }
+    try {
+      const lmBuf = await (await fetch(chrome.runtime.getURL("models/lao_charlm_mobile.bin"))).arrayBuffer();
+      this.charLM = new CompactCharLM(lmBuf);
+    } catch (_) {
+      this.charLM = null;
     }
 
     status("2/3 Detector...");
@@ -449,7 +588,27 @@ class OfflineLaoOCR {
     const out = res[sess.outputNames[0]];
     const T = out.dims[1];
     const C = out.dims[2];
-    const probs = out.data;
+    const rawOut = out.data;
+
+    const toSoftmax = (src) => {
+      const sm = new Float32Array(T * C);
+      for (let t = 0; t < T; t++) {
+        const base = t * C;
+        let maxV = -1e9, sumV = 0;
+        for (let c = 0; c < C; c++) { const v = src[base + c]; if (v > maxV) maxV = v; sumV += v; }
+        if (maxV <= 1.001 && sumV > 0.95 && sumV < 1.05) {
+          for (let c = 0; c < C; c++) sm[base + c] = Math.max(0, src[base + c]);
+        } else {
+          let sumE = 0;
+          for (let c = 0; c < C; c++) { const e = Math.exp(Math.max(-30, src[base + c] - maxV)); sm[base + c] = e; sumE += e; }
+          const inv = sumE > 0 ? 1 / sumE : 1 / C;
+          for (let c = 0; c < C; c++) sm[base + c] *= inv;
+        }
+      }
+      return sm;
+    };
+
+    let probs = toSoftmax(rawOut);
 
     let blockFn = null;
     if (modelMode === "lao") {
@@ -458,43 +617,60 @@ class OfflineLaoOCR {
       blockFn = (c) => this.laoIsThai[c];
     }
 
-    let text = "";
-    let prev = -1;
-    let confSum = 0;
-    let confCnt = 0;
-    for (let t = 0; t < T; t++) {
-      let bestIdx = 0;
-      let bestVal = -1e9;
-      const base = t * C;
-      for (let c = 0; c < C; c++) {
-        if (blockFn && blockFn(c)) continue;
-        const v = probs[base + c];
-        if (v > bestVal) {
-          bestVal = v;
-          bestIdx = c;
+    const evalConf = (pArr) => {
+      let cSum = 0, cCnt = 0, prevC = -1, gTxt = "";
+      for (let t = 0; t < T; t++) {
+        const base = t * C;
+        let bI = 0, bV = -1;
+        for (let c = 0; c < C; c++) {
+          if (blockFn && c > 0 && blockFn(c)) continue;
+          const v = pArr[base + c];
+          if (v > bV) { bV = v; bI = c; }
         }
-      }
-      if (bestIdx !== 0 && bestIdx !== prev) {
-        text += chars[bestIdx];
-        // Handle both already-softmaxed probabilities [0..1] and raw logits
-        let rowSum = 0;
-        for (let c = 0; c < C; c++) rowSum += probs[base + c];
-        if (bestVal >= 0 && bestVal <= 1.001 && rowSum > 0.95 && rowSum < 1.05) {
-          confSum += bestVal;
-        } else {
-          let sumExp = 0;
-          for (let c = 0; c < C; c++) {
-            const d = probs[base + c] - bestVal;
-            if (d > -20) sumExp += Math.exp(d);
-          }
-          confSum += sumExp > 0 ? 1 / sumExp : 1;
+        if (bI !== 0 && bI !== prevC && bI < chars.length) {
+          gTxt += chars[bI];
+          cSum += bV;
+          cCnt++;
         }
-        confCnt++;
+        prevC = bI;
       }
-      prev = bestIdx;
+      return { conf: cCnt > 0 ? cSum / cCnt : 0, greedy: gTxt };
+    };
+
+    let { conf, greedy } = evalConf(probs);
+    // Low-Confidence TTA: if mean conf < 0.88, re-read with slightly wider top/bottom margin and average probs
+    if (conf < 0.88 && !needsDewarp && (y2 - y1) >= 12) {
+      const ty1 = Math.max(0, y1 - Math.max(3, Math.round((y2 - y1) * 0.10)));
+      const ty2 = Math.min(canvas.height, y2 + Math.max(2, Math.round((y2 - y1) * 0.08)));
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, newW, H);
+      ctx.drawImage(canvas, x1, ty1, cw, Math.max(1, ty2 - ty1), 0, 0, newW, H);
+      const d2 = ctx.getImageData(0, 0, newW, H).data;
+      const in2 = new Float32Array(3 * hw);
+      for (let i = 0; i < hw; i++) {
+        const v = (0.299 * d2[i * 4] + 0.587 * d2[i * 4 + 1] + 0.114 * d2[i * 4 + 2]) / 127.5 - 1.0;
+        in2[i] = v; in2[hw + i] = v; in2[2 * hw + i] = v;
+      }
+      const res2 = await sess.run({ x: new ort.Tensor("float32", in2, [1, 3, H, newW]) });
+      const out2 = res2[sess.outputNames[0]];
+      if (out2.dims[1] === T && out2.dims[2] === C) {
+        const p2 = toSoftmax(out2.data);
+        for (let i = 0; i < probs.length; i++) probs[i] = 0.5 * (probs[i] + p2[i]);
+        const ev2 = evalConf(probs);
+        conf = ev2.conf;
+        greedy = ev2.greedy;
+      }
     }
-    this._lastConf = confCnt > 0 ? confSum / confCnt : 0;
-    if (useThai) return text.trim();
+
+    this._lastConf = conf;
+    if (useThai) return greedy.trim();
+
+    // 5-gram Lao CharLM CTC Prefix Beam Search (resolves ຜ່ານ/ຜານ, ຕ່າງໆ/ຕາງໆ, ໄດ້ແຕ່ງຕັ້ງ, ງ/າ!)
+    let text = greedy;
+    if (/[\u0E80-\u0EFF]/.test(greedy) && this.charLM) {
+      const beamBlock = blockFn || ((c) => this.laoIsThai[c]);
+      text = beamDecodeCTC(probs, T, C, chars, this.charLM, beamBlock, 0.36, 0.72, 8);
+    }
     const cleaned = text.replace(/ໍ\u0eb2/g, "ຳ").trim();
     return this.correctLaoLine(cleaned);
   }

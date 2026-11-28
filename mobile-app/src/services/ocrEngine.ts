@@ -9,6 +9,7 @@ import { Asset } from "expo-asset";
 import * as FileSystem from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
 import { Buffer } from "buffer";
+import { beamDecodeCTC, CompactCharLM } from "./charLm";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const jpeg = require("jpeg-js");
@@ -264,6 +265,7 @@ class MobileLaoOcrEngine {
   private thaiReady = false;
   private lastConf = 0;
   private lastLowConfWords: Record<string, number> = {};
+  private charLM: CompactCharLM | null = null;
 
   async init(): Promise<void> {
     if (this.ready) return;
@@ -272,10 +274,18 @@ class MobileLaoOcrEngine {
     const dictAsset = Asset.fromModule(require("../../assets/models/rec_dict.txt"));
     const detAsset = Asset.fromModule(require("../../assets/models/det.onnx"));
     const recAsset = Asset.fromModule(require("../../assets/models/rec.onnx"));
-    await Promise.all([dictAsset.downloadAsync(), detAsset.downloadAsync(), recAsset.downloadAsync()]);
+    const lmAsset = Asset.fromModule(require("../../assets/models/lao_charlm_mobile.bin"));
+    await Promise.all([dictAsset.downloadAsync(), detAsset.downloadAsync(), recAsset.downloadAsync(), lmAsset.downloadAsync()]);
 
     const dictText = await FileSystem.readAsStringAsync(dictAsset.localUri!);
     this.chars = ["", ...dictText.split(/\r?\n/).filter(Boolean), " "];
+
+    try {
+      const lmB64 = await FileSystem.readAsStringAsync(lmAsset.localUri!, { encoding: FileSystem.EncodingType.Base64 });
+      this.charLM = new CompactCharLM(Buffer.from(lmB64, "base64"));
+    } catch (_) {
+      this.charLM = null;
+    }
 
     this.detSession = await ort.InferenceSession.create(detAsset.localUri!);
     this.recSession = await ort.InferenceSession.create(recAsset.localUri!);
@@ -750,6 +760,29 @@ class MobileLaoOcrEngine {
     }
 
     if (useThai) return text.trim();
+    // Apply 5-gram Lao CharLM CTC Prefix Beam Search for context-accurate tone marks & look-alike letters!
+    if (/[\u0E80-\u0EFF]/.test(text) && this.charLM) {
+      const sm = new Float32Array(T * C);
+      for (let t = 0; t < T; t++) {
+        const base = t * C;
+        let maxV = -1e9, sumV = 0;
+        for (let c = 0; c < C; c++) { const v = probs[base + c]; if (v > maxV) maxV = v; sumV += v; }
+        if (maxV <= 1.001 && sumV > 0.95 && sumV < 1.05) {
+          for (let c = 0; c < C; c++) sm[base + c] = Math.max(0, probs[base + c]);
+        } else {
+          let sumE = 0;
+          for (let c = 0; c < C; c++) { const e = Math.exp(Math.max(-30, probs[base + c] - maxV)); sm[base + c] = e; sumE += e; }
+          const inv = sumE > 0 ? 1 / sumE : 1 / C;
+          for (let c = 0; c < C; c++) sm[base + c] *= inv;
+        }
+      }
+      const blockThai = (c: number) => {
+        const ch = chars[c] || "";
+        if (mode === "lao") return (ch >= "\u0e00" && ch <= "\u0e7f") || /^[A-Za-z]$/.test(ch);
+        return ch >= "\u0e00" && ch <= "\u0e7f";
+      };
+      text = beamDecodeCTC(sm, T, C, chars, this.charLM, blockThai, 0.36, 0.72, 8);
+    }
     const cleaned = text.replace(/ໍ\u0eb2/g, "ຳ").trim();
     return correctLaoLine(cleaned);
   }
