@@ -81,14 +81,16 @@ class OfflineLaoOCR {
     let lo = 0, hi = 255, acc = 0;
     for (let i = 0; i < 256; i++) {
       acc += hist[i];
-      if (acc >= n * 0.02) { lo = i; break; }
+      if (acc >= n * 0.01) { lo = i; break; }
     }
     acc = 0;
     for (let i = 0; i < 256; i++) {
       acc += hist[i];
-      if (acc >= n * 0.90) { hi = i; break; }
+      if (acc >= n * 0.985) { hi = i; break; }
     }
-    const span = Math.max(32, hi - lo);
+    const span = hi - lo;
+    // Do NOT bleach clean scans / high-contrast pages (preserves faint thin Lao tone marks ່ ້!)
+    if (span >= 155 || span < 20) return srcCanvas;
     const scale = 255.0 / span;
     for (let i = 0; i < d.length; i += 4) {
       const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
@@ -391,11 +393,24 @@ class OfflineLaoOCR {
     tmp.width = newW;
     tmp.height = H;
     const ctx = tmp.getContext("2d", { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, newW, H);
 
-    // Dewarp wavy / tilted text lines slice-by-slice along smoothed column centerline
+    // Only slice-dewarp if the line is genuinely tilted/curved (variation >= max(5px, 14% of height));
+    // on straight book/PDF lines, a single smooth drawImage preserves thin 2px Lao tone marks (່ ້)!
+    let needsDewarp = false;
     if (box._colTop && box._colBot && box._colTop.length >= 10) {
+      let minT = 1e9, maxT = -1e9;
+      for (let c = 0; c < box._colTop.length; c++) {
+        if (box._colTop[c] < minT) minT = box._colTop[c];
+        if (box._colTop[c] > maxT) maxT = box._colTop[c];
+      }
+      needsDewarp = (maxT - minT) >= Math.max(5, ch * 0.14);
+    }
+
+    if (needsDewarp) {
       const nCols = box._colTop.length;
       const slices = Math.min(48, Math.max(12, Math.floor(newW / 8)));
       for (let s = 0; s < slices; s++) {
